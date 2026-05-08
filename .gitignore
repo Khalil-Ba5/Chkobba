@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+.env
+.env.*
+!.env.example
+venv/
+.venv/
+*.db-journal
+.pytest_cache/
+.mypy_cache/
+.DS_Store
+chkobba_games.db

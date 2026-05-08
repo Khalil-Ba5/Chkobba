@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chkobba - Tunisian Card Game</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="app-shell">
+        <!-- Top Bar -->
+        <header class="top-bar">
+            <div class="top-bar-left">
+                <h1 class="app-title">Chkobba</h1>
+            </div>
+            <div class="top-bar-center">
+                <div class="score-display">
+                    {% if target_score %}
+                    <div class="score-item target-score">
+                        <span class="score-label">Target</span>
+                        <span class="score-value">{{ target_score }}</span>
+                    </div>
+                    {% endif %}
+                    <div class="score-item your-score">
+                        <span class="score-label">You</span>
+                        <span class="score-value">{{ match_scores[0] }}</span>
+                    </div>
+                    <div class="score-item bot-score">
+                        <span class="score-label">Bot</span>
+                        <span class="score-value">{{ match_scores[1] }}</span>
+                    </div>
+                </div>
+            </div>
+            <div class="top-bar-right">
+                <a href="{{ url_for('index', debug=1 if not debug else 0) }}" class="btn-icon" title="Toggle Debug Mode">
+                    <span class="debug-indicator {% if debug %}active{% endif %}">🔍</span>
+                </a>
+                <form action="{{ url_for('restart') }}" method="post" class="inline-form">                        <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">                    <button type="submit" class="btn-secondary">Menu</button>
+                </form>
+            </div>
+        </header>
+
+        <!-- Flash Messages -->
+        {% with messages = get_flashed_messages() %}
+            {% if messages %}
+                <div class="flash-messages">
+                    {% for msg in messages %}
+                        <div class="flash-message">{{ msg }}</div>
+                    {% endfor %}
+                </div>
+            {% endif %}
+        {% endwith %}
+
+        <!-- Start Screen Modal -->
+        {% if show_start_screen %}
+            <div class="modal-overlay active">
+                <div class="modal start-modal">
+                    <div class="modal-header">
+                        <h2>Start New Match</h2>
+                    </div>
+                    <div class="modal-body">
+                        <p>Choose your target score</p>
+                        <div style="margin-bottom: 1rem; display: flex; gap: 0.6rem; justify-content: center; flex-wrap: wrap;">
+                            {% if has_saved_session %}
+                            <form action="{{ url_for('resume') }}" method="post" class="inline-form">
+                                <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+                                <button type="submit" class="btn-secondary">Resume Last Game</button>
+                            </form>
+                            {% endif %}
+                            <a href="{{ url_for('history') }}" class="btn-secondary">Match History</a>
+                        </div>
+                        <form action="{{ url_for('start') }}" method="post">
+                            <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+                            <div class="target-options">
+                                {% for score in target_scores %}
+                                    <label class="target-option">
+                                        <input type="radio" name="target_score" value="{{ score }}" {% if loop.first %}checked{% endif %}>
+                                        <span class="option-circle">{{ score }}</span>
+                                        <span class="option-text">points</span>
+                                    </label>
+                                {% endfor %}
+                            </div>
+                            <button type="submit" class="btn-primary btn-large">Start Game</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        {% else %}
+            <!-- Main Game Board -->
+            <main class="game-container">
+                <!-- Large Table Area with Hands Integrated -->
+                <section class="table-area">
+                    <!-- Opponent Info & Hand (Top) -->
+                    <div class="table-section opponent-section">
+                        <div class="opponent-info">
+                            <h3 class="opponent-name">Bot</h3>
+                            {% if not human_is_current and not round_over and not has_pending_bot %}
+                                <span class="turn-badge thinking">Thinking…</span>
+                            {% elif has_pending_bot %}
+                                <span class="turn-badge thinking">Playing…</span>
+                            {% endif %}
+                        </div>
+                        <div class="opponent-hand-display">
+                            {% for _ in range(bot_hand_count) %}
+                                <div class="card-back"></div>
+                            {% endfor %}
+                            {% if has_pending_bot %}
+                                <div class="card bot-capture-card {% if '♥' in pending_bot_played_card or '♦' in pending_bot_played_card %}red-suit{% endif %}">{{ pending_bot_played_card }}</div>
+                            {% endif %}
+                            {% if bot_hand_count == 0 and not has_pending_bot %}
+                                <span class="empty-hand">No cards</span>
+                            {% endif %}
+                        </div>
+                        <div class="opponent-stats-compact">
+                            <span>{{ bot_captured_count }} Captured</span>
+                            <span>{{ bot_chkobbas }} Chkobbas</span>
+                        </div>
+                    </div>
+
+                    <!-- Table Felt with Cards (Center) -->
+                    <div class="table-felt table" aria-label="Play area">
+                        <h3 class="table-label">Table</h3>
+                        <div class="card-display table-cards" id="table-cards">
+                            {% if table_slots and (table_slots | map(attribute='card') | select | list) %}
+                                {% for slot in table_slots %}
+                                    {% if slot.card %}
+                                    <div class="card table-card {% if '♥' in slot.card or '♦' in slot.card %}red-suit{% endif %}
+                                        {% if human_is_current and not round_over and not has_pending_bot %}selectable{% endif %}
+                                        {% if loop.index0 == last_human_played_table_index %}human-played{% endif %}
+                                        {% if slot.card == last_played_card and last_played_by == 'human' %}fly-from-human{% endif %}
+                                        {% if slot.card == last_played_card and last_played_by == 'bot' %}fly-from-bot{% endif %}"
+                                        data-table-index="{{ slot.table_index }}"
+                                    >{{ slot.card }}</div>
+                                    {% else %}
+                                    <div class="card table-card table-slot-empty" aria-hidden="true"></div>
+                                    {% endif %}
+                                {% endfor %}
+                            {% else %}
+                                <div class="empty-table">No cards on table</div>
+                            {% endif %}
+                        </div>
+                    </div>
+
+                    <!-- Your Hand & Stats (Bottom) -->
+                    <div class="table-section player-section">
+                        <div class="player-hand-display" id="hand-cards">
+                            {% if human_hand %}
+                                {% for card in human_hand %}
+                                    <div class="card hand-card {% if '♥' in card or '♦' in card %}red-suit{% endif %} {% if human_is_current and not round_over and not has_pending_bot %}selectable{% endif %}"
+                                        data-hand-index="{{ loop.index0 }}"
+                                    >{{ card }}</div>
+                                {% endfor %}
+                            {% else %}
+                                <span class="empty-hand">No cards</span>
+                            {% endif %}
+                        </div>
+                        <div class="player-info">
+                            <h3 class="player-name">You</h3>
+                            {% if human_is_current and not round_over and not has_pending_bot %}
+                                <span class="turn-badge your-turn">Your turn</span>
+                            {% endif %}
+                        </div>
+                        <div class="player-stats-compact">
+                            <span>{{ human_captured_count }} Captured</span>
+                            <span>{{ human_chkobbas }} Chkobbas</span>
+                            <span>{{ deck_remaining }} Deck</span>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Control Panel -->
+                {% if human_is_current and not round_over and not has_pending_bot %}
+                    <section class="control-panel">
+                        <div class="selection-info">
+                            <p id="selection-hint">Select a card from your hand</p>
+                        </div>
+                        <form action="{{ url_for('play_selected') }}" method="post" id="play-form">
+                            <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+                            <input type="hidden" name="hand_index" id="hand-index" value="">
+                            <input type="hidden" name="table_indices" id="table-indices" value="">
+                            <div class="button-group">
+                                <button type="submit" class="btn-primary" id="play-button" disabled>Play Move</button>
+                                <button type="button" class="btn-secondary" id="reset-selection">Reset Selection</button>
+                            </div>
+                        </form>
+                    </section>
+                {% endif %}
+
+                <!-- Move Summary Toast -->
+                {% if last_human_move or last_bot_move %}
+                    <div class="move-summary">
+                        {% if last_human_move %}<div class="move-item you">You {{ last_human_move }}</div>{% endif %}
+                        {% if last_bot_move %}<div class="move-item bot">Bot {{ last_bot_move }}</div>{% endif %}
+                    </div>
+                {% endif %}
+
+                <!-- Debug Panel -->
+                {% if debug and move_buttons and not round_over %}
+                    <section class="debug-panel">
+                        <h4>Legal Moves</h4>
+                        <div class="move-buttons">
+                            {% for btn in move_buttons %}
+                                <form action="{{ url_for('move', move_index=btn.index) }}" method="post" class="inline-form">
+                                    <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+                                    <button type="submit" class="btn-move">{{ btn.label }}</button>
+                                </form>
+                            {% endfor %}
+                        </div>
+                    </section>
+                {% endif %}
+
+                {% if debug %}
+                    <section class="debug-panel">
+                        <h4>Game State</h4>
+                        <div class="debug-info">
+                            <p><strong>Current player:</strong> {{ debug_data.current_player }}</p>
+                            <p><strong>Deck:</strong> {{ debug_data.deck_count }} cards</p>
+                            <p><strong>Last capturer:</strong> {{ debug_data.last_capturer }}</p>
+                        </div>
+                    </section>
+                {% endif %}
+            </main>
+
+            <!-- Round Over Modal -->
+            {% if show_next_round %}
+                <div class="modal-overlay active">
+                    <div class="modal round-over-modal">
+                        <div class="modal-header">
+                            <h2>Round Complete</h2>
+                        </div>
+                        <div class="modal-body">
+                            <div class="round-score">
+                                <div class="score-item-large">
+                                    <span class="score-value">{{ final_points[0] }}</span>
+                                    <span class="score-label">You</span>
+                                </div>
+                                <span class="score-vs">vs</span>
+                                <div class="score-item-large">
+                                    <span class="score-value">{{ final_points[1] }}</span>
+                                    <span class="score-label">Bot</span>
+                                </div>
+                            </div>
+                            <div class="match-score">
+                                <p>Match: <strong>{{ match_scores[0] }}</strong> — <strong>{{ match_scores[1] }}</strong></p>
+                            </div>
+                            <form action="{{ url_for('next_round') }}" method="post" class="inline-form">
+                                <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+                                <button type="submit" class="btn-primary btn-large">Next Round</button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            {% endif %}
+
+            <!-- Game Over Modal -->
+            {% if match_over %}
+                <div class="modal-overlay active">
+                    <div class="modal game-over-modal">
+                        <div class="modal-header">
+                            <h2>Match Complete</h2>
+                        </div>
+                        <div class="modal-body">
+                            {% if match_winner == 0 %}
+                                <div class="winner-announcement win">
+                                    <div class="winner-emoji">🏆</div>
+                                    <h3>You Win!</h3>
+                                </div>
+                            {% elif match_winner == 1 %}
+                                <div class="winner-announcement lose">
+                                    <div class="winner-emoji">🤖</div>
+                                    <h3>Bot Wins</h3>
+                                </div>
+                            {% else %}
+                                <div class="winner-announcement tie">
+                                    <div class="winner-emoji">🤝</div>
+                                    <h3>Match Tied</h3>
+                                </div>
+                            {% endif %}
+                            <div class="final-score">
+                                <p><strong>{{ match_scores[0] }}</strong> — <strong>{{ match_scores[1] }}</strong></p>
+                            </div>
+                            <form action="{{ url_for('restart') }}" method="post" class="inline-form">
+                                <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+                                <button type="submit" class="btn-primary btn-large">New Game</button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            {% endif %}
+
+            <!-- Toast Container -->
+            <div class="toast-container" id="toast-container"></div>
+
+            <!-- Capture Map Data -->
+            <script type="application/json" id="capture-map-data">
+            {{ capture_map | tojson | safe }}
+            </script>
+
+            <!-- Bot Auto-play Script -->
+            {% if has_pending_bot %}
+                <form action="{{ url_for('commit_bot') }}" method="post" id="commit-bot-form" style="display:none;">
+                    <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+                </form>
+                <script type="application/json" id="bot-pending-data">
+                {
+                    "is_capture": {{ pending_bot_is_capture | lower }},
+                    "captured_indices": {{ pending_bot_captured_indices | tojson | safe }},
+                    "bot_card": {{ pending_bot_played_card | tojson | safe }}
+                }
+                </script>
+                <script>
+                (function() {
+                    var raw = document.getElementById('bot-pending-data');
+                    if (!raw) return;
+                    var data = JSON.parse(raw.textContent);
+
+                    // Phase 1: bot card is visible near hand (CSS handles appear)
+
+                    // Phase 2 at 1000ms: bot card disappears, then yellow phase
+                    setTimeout(function() {
+                        var botCard = document.querySelector('.bot-capture-card');
+                        if (botCard) {
+                            botCard.style.transition = 'opacity 0.2s, transform 0.2s';
+                            botCard.style.opacity = '0';
+                            botCard.style.transform = 'scale(0.8)';
+                        }
+
+                        // For captures, do not leave intermediate table highlights.
+                        // The next render after /commit_bot reflects the real table state.
+                    }, 1000);
+
+                    // Phase 3 at 1500ms: submit to commit the move
+                    setTimeout(function() {
+                        document.getElementById('commit-bot-form').submit();
+                    }, 1500);
+                })();
+                </script>
+            {% endif %}
+
+            <!-- Main Game Script -->
+            <script>
+            (function() {
+                const raw = document.getElementById('capture-map-data');
+                if (!raw) return;
+
+                const CAPTURE_MAP = JSON.parse(raw.textContent || '{}');
+                const handCards = document.querySelectorAll('#hand-cards .card.selectable');
+                const tableCards = document.querySelectorAll('#table-cards .card.selectable');
+                const handInput = document.getElementById('hand-index');
+                const tableInput = document.getElementById('table-indices');
+                const playButton = document.getElementById('play-button');
+                const resetButton = document.getElementById('reset-selection');
+                const hint = document.getElementById('selection-hint');
+
+                if (!handInput || !tableInput || !playButton) return;
+
+                let selectedHandIndex = null;
+                let selectedTableIndices = new Set();
+                let validSelection = false;
+
+                function arraysEqual(a, b) {
+                    if (a.length !== b.length) return false;
+                    const sa = a.slice().sort((x, y) => x - y);
+                    const sb = b.slice().sort((x, y) => x - y);
+                    return sa.every((v, i) => v === sb[i]);
+                }
+
+                function clearHighlights() {
+                    handCards.forEach(c => c.classList.remove('selected'));
+                    tableCards.forEach(c => {
+                        c.classList.remove('highlighted', 'valid-capture', 'selected');
+                    });
+                }
+
+                function setHint(text) {
+                    if (!hint) return;
+                    hint.textContent = text;
+                }
+
+                function resetSelection() {
+                    selectedHandIndex = null;
+                    selectedTableIndices.clear();
+                    validSelection = false;
+                    handInput.value = '';
+                    tableInput.value = '';
+                    playButton.disabled = true;
+                    clearHighlights();
+                    setHint('Select a card from your hand');
+                }
+
+                function updateForm() {
+                    handInput.value = selectedHandIndex ?? '';
+                    tableInput.value = Array.from(selectedTableIndices).join(',');
+                    playButton.disabled = !validSelection;
+                }
+
+                function highlightCapturable(captureOptions) {
+                    const allIndices = new Set();
+                    captureOptions.forEach(opt => {
+                        opt.table_indices.forEach(i => allIndices.add(String(i)));
+                    });
+                    tableCards.forEach(card => {
+                        if (allIndices.has(card.dataset.tableIndex)) {
+                            card.classList.add('highlighted', 'valid-capture');
+                        }
+                    });
+                }
+
+                function findMatchingCapture(handIdx, tableIdxs) {
+                    const options = CAPTURE_MAP[handIdx];
+                    if (!options) return null;
+                    const sorted = tableIdxs.slice().sort((a, b) => a - b);
+                    for (const opt of options) {
+                        if (arraysEqual(opt.table_indices, sorted)) return opt;
+                    }
+                    return null;
+                }
+
+                function refreshValidity() {
+                    if (selectedHandIndex === null) {
+                        validSelection = false;
+                        updateForm();
+                        return;
+                    }
+
+                    const selectedArr = Array.from(selectedTableIndices);
+                    const match = findMatchingCapture(selectedHandIndex, selectedArr);
+                    validSelection = Boolean(match);
+                    updateForm();
+
+                    if (validSelection) {
+                        if (selectedArr.length === 0) {
+                            setHint('Click "Play Move" to place card on table');
+                        } else {
+                            setHint('Valid capture - ready to play!');
+                        }
+                    } else {
+                        if (selectedArr.length === 0) {
+                            setHint('Select table cards to capture');
+                        } else {
+                            setHint('Invalid capture selection');
+                        }
+                    }
+                }
+
+                handCards.forEach(card => {
+                    card.addEventListener('click', function() {
+                        const idx = this.dataset.handIndex;
+                        resetSelection();
+                        selectedHandIndex = idx;
+                        this.classList.add('selected');
+
+                        const options = CAPTURE_MAP[idx] || [];
+                        const captureOptions = options.filter(o => o.is_capture);
+
+                        if (captureOptions.length === 0) {
+                            // If this specific card has no capture options, play it to table.
+                            validSelection = true;
+                            selectedTableIndices.clear();
+                            updateForm();
+                            setHint('Playing this card to the table...');
+                            setTimeout(function() {
+                                document.getElementById('play-form').submit();
+                            }, 150);
+                            return;
+                        } else {
+                            highlightCapturable(captureOptions);
+                            setHint('Select table cards to capture');
+                        }
+                        refreshValidity();
+                    });
+                });
+
+                tableCards.forEach(card => {
+                    card.addEventListener('click', function() {
+                        if (selectedHandIndex === null) {
+                            setHint('Choose a card from your hand first');
+                            return;
+                        }
+                        if (!this.classList.contains('valid-capture')) {
+                            setHint('That card is not part of a valid capture');
+                            return;
+                        }
+
+                        const intIdx = parseInt(this.dataset.tableIndex, 10);
+                        if (selectedTableIndices.has(intIdx)) {
+                            selectedTableIndices.delete(intIdx);
+                            this.classList.remove('selected');
+                        } else {
+                            selectedTableIndices.add(intIdx);
+                            this.classList.add('selected');
+                        }
+                        refreshValidity();
+
+                        if (validSelection) {
+                            setHint('Playing move...');
+                            setTimeout(function() {
+                                document.getElementById('play-form').submit();
+                            }, 150);
+                        }
+                    });
+                });
+
+                if (resetButton) resetButton.addEventListener('click', resetSelection);
+            })();
+            </script>
+        {% endif %}
+    </div>
+</body>
+</html>

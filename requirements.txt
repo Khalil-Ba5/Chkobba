@@ -1,0 +1,10 @@
+# Render / Linux production:
+#   gunicorn --bind 0.0.0.0:$PORT ui.app:app
+#
+# Windows (gunicorn does not work — no fcntl):
+#   python ui/app.py
+#   waitress-serve --listen=127.0.0.1:5000 ui.app:app
+
+Flask>=3.0.0
+gunicorn>=22.0.0
+waitress>=3.0.0

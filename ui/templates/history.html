@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chkobba - Match History</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="app-shell">
+        <header class="top-bar">
+            <div class="top-bar-left"><h1 class="app-title">Match History</h1></div>
+            <div class="top-bar-right">
+                <a href="{{ url_for('index') }}" class="btn-secondary">Back to Game</a>
+            </div>
+        </header>
+
+        <main class="game-container">
+            <section class="debug-panel">
+                <h4>Overall Stats</h4>
+                <div class="debug-info">
+                    <p><strong>Total matches:</strong> {{ stats.total_matches }}</p>
+                    <p><strong>Human wins:</strong> {{ stats.human_wins }}</p>
+                    <p><strong>Bot wins:</strong> {{ stats.bot_wins }}</p>
+                    <p><strong>Ties:</strong> {{ stats.ties }}</p>
+                    <p><strong>Win rate:</strong> {{ "%.1f"|format((stats.win_rate or 0) * 100) }}%</p>
+                </div>
+            </section>
+
+            <section class="debug-panel">
+                <h4>Recent Matches</h4>
+                {% if matches %}
+                    <div class="debug-info">
+                        {% for m in matches %}
+                            <p>
+                                <strong>#{{ m.id }}</strong> -
+                                {{ m.created_at[:19].replace("T", " ") }} -
+                                Target {{ m.target_score }} -
+                                You {{ m.human_score }} : {{ m.bot_score }} Bot -
+                                {% if m.winner == 0 %}You won{% elif m.winner == 1 %}Bot won{% else %}Tie{% endif %}
+                            </p>
+                        {% endfor %}
+                    </div>
+                {% else %}
+                    <div class="debug-info"><p>No match history yet.</p></div>
+                {% endif %}
+            </section>
+        </main>
+    </div>
+</body>
+</html>
