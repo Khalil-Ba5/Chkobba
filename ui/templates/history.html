@@ -2,50 +2,93 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Chkobba - Match History</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>Chkobba — Match History</title>
+    <link rel="icon" href="data:,">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@700;900&family=Inter:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Caveat:wght@400;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ static_url('style.css') }}">
 </head>
 <body>
-    <div class="app-shell">
-        <header class="top-bar">
-            <div class="top-bar-left"><h1 class="app-title">Match History</h1></div>
-            <div class="top-bar-right">
-                <a href="{{ url_for('index') }}" class="btn-secondary">Back to Game</a>
-            </div>
-        </header>
+<!-- ════════════ HUD ════════════ -->
+<header class="hud">
+    <div class="hud-brand">Chkobba</div>
+    <nav class="hud-nav">
+        <a href="{{ url_for('index') }}"  class="hud-btn">Home</a>
+        <a href="{{ url_for('lobby') }}"  class="hud-btn">Lobby</a>
+        <a href="{{ url_for('history') }}" class="hud-btn active">History</a>
+    </nav>
+</header>
 
-        <main class="game-container">
-            <section class="debug-panel">
-                <h4>Overall Stats</h4>
-                <div class="debug-info">
-                    <p><strong>Total matches:</strong> {{ stats.total_matches }}</p>
-                    <p><strong>Human wins:</strong> {{ stats.human_wins }}</p>
-                    <p><strong>Bot wins:</strong> {{ stats.bot_wins }}</p>
-                    <p><strong>Ties:</strong> {{ stats.ties }}</p>
-                    <p><strong>Win rate:</strong> {{ "%.1f"|format((stats.win_rate or 0) * 100) }}%</p>
-                </div>
-            </section>
-
-            <section class="debug-panel">
-                <h4>Recent Matches</h4>
-                {% if matches %}
-                    <div class="debug-info">
-                        {% for m in matches %}
-                            <p>
-                                <strong>#{{ m.id }}</strong> -
-                                {{ m.created_at[:19].replace("T", " ") }} -
-                                Target {{ m.target_score }} -
-                                You {{ m.human_score }} : {{ m.bot_score }} Bot -
-                                {% if m.winner == 0 %}You won{% elif m.winner == 1 %}Bot won{% else %}Tie{% endif %}
-                            </p>
-                        {% endfor %}
-                    </div>
-                {% else %}
-                    <div class="debug-info"><p>No match history yet.</p></div>
-                {% endif %}
-            </section>
-        </main>
+<!-- ════════════ PAGE ════════════ -->
+<main class="history-page">
+    <div class="history-header">
+        <span class="avatar-dot" style="background:{{ avatar_color }}">{{ avatar_initial }}</span>
+        <h1 class="history-title">{{ display_name }}'s Match History</h1>
     </div>
+
+    {% if not matches %}
+    <div class="history-empty">
+        <p>No matches recorded yet.</p>
+        <a href="{{ url_for('lobby') }}" class="btn-deal" style="text-decoration:none;margin-top:1rem">Play a game</a>
+    </div>
+    {% else %}
+    <table class="history-table">
+        <thead>
+            <tr>
+                <th>Opponent</th>
+                <th>Mode</th>
+                <th>Score</th>
+                <th>Result</th>
+                <th>Date</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for m in matches %}
+            {% set my_seat = namespace(val=0) %}
+            {% set opp = namespace(name='?', seat=1) %}
+            {% for p in m.players %}
+                {% if p.guest_id == guest_id %}
+                    {% set my_seat.val = p.seat %}
+                {% else %}
+                    {% set opp.name = p.display_name %}
+                    {% set opp.seat = p.seat %}
+                {% endif %}
+            {% endfor %}
+            {% set my_score  = m.scores[my_seat.val]  if m.scores|length > my_seat.val  else '?' %}
+            {% set opp_score = m.scores[opp.seat]     if m.scores|length > opp.seat     else '?' %}
+            {% set winner_guest = m.winner %}
+            {% if m.winner is none %}
+                {% set result_label = 'Draw' %}
+                {% set result_cls   = 'draw' %}
+            {% elif m.winner == guest_id %}
+                {% set result_label = 'Won' %}
+                {% set result_cls   = 'won' %}
+            {% else %}
+                {% set result_label = 'Lost' %}
+                {% set result_cls   = 'lost' %}
+            {% endif %}
+            {% if m.was_forfeit %}
+                {% set result_label = result_label + ' (forfeit)' %}
+            {% endif %}
+            <tr>
+                <td class="history-opp">{{ opp.name }}</td>
+                <td class="history-mode">{{ m.mode }}</td>
+                <td class="history-score">{{ my_score }} – {{ opp_score }}</td>
+                <td><span class="history-badge {{ result_cls }}">{{ result_label }}</span></td>
+                <td class="history-date">
+                    {% if m.ended_at %}
+                        {{ m.ended_at[:10] }}
+                    {% else %}
+                        —
+                    {% endif %}
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+</main>
 </body>
 </html>

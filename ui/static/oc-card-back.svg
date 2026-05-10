@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 290" preserveAspectRatio="xMidYMid slice">
+  <!-- Orchom Chkobba — original card back design -->
+  <!-- Authentic Tunisian playing-card style with OC monogram -->
+  
+  <defs>
+    <pattern id="ocPattern" x="0" y="0" width="50" height="58" patternUnits="userSpaceOnUse">
+      <!-- Cream cell background -->
+      <rect width="50" height="58" fill="#faf6ed"/>
+      
+      <g fill="#c1272d">
+        <!-- Top/bottom diamonds (vertical star points) -->
+        <polygon points="25,0 30,6 25,12 20,6"/>
+        <polygon points="25,46 30,52 25,58 20,52"/>
+        
+        <!-- Left/right diamonds (horizontal star points) -->
+        <polygon points="0,29 6,24 12,29 6,34"/>
+        <polygon points="38,29 44,24 50,29 44,34"/>
+        
+        <!-- Corner triangles (form bowtie X shapes when tiled) -->
+        <polygon points="0,0 8,6 0,12"/>
+        <polygon points="50,0 42,6 50,12"/>
+        <polygon points="0,46 8,52 0,58"/>
+        <polygon points="50,46 42,52 50,58"/>
+        
+        <!-- Central OC monogram -->
+        <text x="25" y="34" text-anchor="middle"
+              font-family="Georgia, 'Times New Roman', serif"
+              font-size="14" font-weight="700"
+              letter-spacing="0">OC</text>
+      </g>
+    </pattern>
+  </defs>
+  
+  <!-- Dark border frame -->
+  <rect x="0" y="0" width="200" height="290" rx="10" fill="#0a0a0a"/>
+  
+  <!-- Pattern fill inside the border -->
+  <rect x="4" y="4" width="192" height="282" rx="7" fill="url(#ocPattern)"/>
+</svg>

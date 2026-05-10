@@ -1,0 +1,1291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>Chkobba — 1v1</title>
+    <link rel="icon" href="data:,">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@700;900&family=Inter:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Caveat:wght@400;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ static_url('style.css') }}">
+    <meta name="csrf-token" content="{{ csrf_token() }}">
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js" crossorigin="anonymous"></script>
+    <script src="{{ static_url('js/socket-client.js') }}"></script>
+</head>
+<body>
+<div id="syncing-dot" aria-hidden="true"></div>
+
+<!-- ════════════════ HUD ════════════════ -->
+<header class="hud">
+    <div class="hud-brand">Chkobba</div>
+
+    <div class="hud-scores">
+        <div class="hud-score you">
+            <span class="hs-label">
+                <span class="avatar-dot" style="background:{{ avatar_color }}">{{ avatar_initial }}</span>
+                <span class="hs-name-text">{{ display_name }}</span>
+            </span>
+            <span class="hs-val">{{ match_scores[0] if not game_active else match_scores[0] }}</span>
+        </div>
+        {% if target_score %}
+        <div class="hud-score target">
+            <span class="hs-label">Target</span>
+            <span class="hs-val gold">{{ target_score }}</span>
+        </div>
+        {% else %}
+        <div class="hud-score target">
+            <span class="hs-label">Target</span>
+            <span class="hs-val gold">{{ blob.target_score_mp or 11 }}</span>
+        </div>
+        {% endif %}
+        <div class="hud-score bot">
+            <span class="hs-label">Opp</span>
+            <span class="hs-val">{{ match_scores[1] }}</span>
+        </div>
+    </div>
+
+    <nav class="hud-nav">
+        <span class="conn-dot" title="Connection status" aria-hidden="true"></span>
+        <a href="{{ url_for('index') }}"  class="hud-btn">Home</a>
+        <a href="{{ url_for('lobby') }}"  class="hud-btn">Lobby</a>
+        <a href="{{ url_for('history') }}" class="hud-btn">History</a>
+    </nav>
+</header>
+
+<!-- ════════════════ ROOM NOT FOUND ════════════════ -->
+{% if room_not_found %}
+<main class="play-room-full">
+    <div class="room-full-box">
+        <div class="room-full-icon">🔍</div>
+        <h2 class="room-full-title">Room Not Found</h2>
+        <p class="room-full-sub">This game room doesn't exist or has already expired.</p>
+        <div class="room-full-actions">
+            <a href="{{ url_for('index') }}" class="btn-deal" style="text-decoration:none">Quick Match</a>
+            <a href="{{ url_for('lobby') }}" class="btn-deal btn-secondary" style="text-decoration:none">Back to Lobby</a>
+        </div>
+    </div>
+</main>
+
+<!-- ════════════════ ROOM FULL ════════════════ -->
+{% elif room_full %}
+<main class="play-room-full">
+    <div class="room-full-box">
+        <div class="room-full-icon">🚫</div>
+        <h2 class="room-full-title">This game is full</h2>
+        <p class="room-full-sub">Two players are already in this room.</p>
+        <div class="room-full-actions">
+            <a href="{{ url_for('index') }}" class="btn-deal" style="text-decoration:none">Quick Match instead?</a>
+            <a href="{{ url_for('lobby') }}" class="btn-deal btn-secondary" style="text-decoration:none">View Lobby</a>
+        </div>
+    </div>
+</main>
+
+{% else %}
+
+<!-- ════════════════ COUNTDOWN OVERLAY ════════════════ -->
+<div id="countdown-overlay" class="countdown-overlay hidden" aria-live="assertive">
+    <div class="countdown-box">
+        <div class="countdown-players">
+            <span id="cdo-p0" class="cdo-name"></span>
+            <span class="cdo-vs">VS</span>
+            <span id="cdo-p1" class="cdo-name"></span>
+        </div>
+        <div id="countdown-number" class="countdown-number">3</div>
+        <p class="countdown-sub">Game starting&hellip;</p>
+    </div>
+</div>
+
+<!-- ════════════════ DISCONNECTION BANNER ════════════════ -->
+<div id="disc-banner" class="disc-banner hidden" role="alert" aria-live="assertive">
+    <div class="disc-banner-inner">
+        <span class="disc-icon">⚠️</span>
+        <span id="disc-msg" class="disc-msg">Opponent disconnected</span>
+        <span id="disc-timer" class="disc-timer">30s</span>
+    </div>
+</div>
+
+<!-- ════════════════ YOU WERE REPLACED OVERLAY ════════════════ -->
+<div id="replaced-overlay" class="countdown-overlay hidden">
+    <div class="countdown-box" style="max-width:380px">
+        <div class="room-full-icon">😔</div>
+        <h2 class="room-full-title" style="margin:.75rem 0 .5rem">You were replaced</h2>
+        <p class="room-full-sub">The match continued without you after the reconnect window expired.</p>
+        <div class="room-full-actions" style="margin-top:1.5rem">
+            <a href="{{ url_for('lobby') }}" class="btn-deal" style="text-decoration:none">Back to Lobby</a>
+        </div>
+    </div>
+</div>
+
+<!-- ════════════════ WAITING SCREEN ════════════════ -->
+<div id="waiting-screen" class="play-waiting{% if game_active %} hidden{% endif %}"
+     data-created-at="{{ blob.created_at or '' }}">
+    <div class="waiting-box">
+        <div class="waiting-players">
+            {% set p0 = blob.players[0] if blob.players|length > 0 else {} %}
+            {% set p1 = blob.players[1] if blob.players|length > 1 else {} %}
+            <div class="waiting-player" id="wp-0">
+                <span class="avatar-dot avatar-lg" style="background:{{ p0.guest_id | default('') | avatar_color_filter }}">
+                    {{ (p0.display_name or 'P1')[0] | upper }}
+                </span>
+                <span class="waiting-player-name">{{ p0.display_name or 'Player 1' }}</span>
+                <span class="waiting-badge joined">joined</span>
+            </div>
+
+            <div class="waiting-vs">VS</div>
+
+            <div class="waiting-player waiting-player-empty" id="wp-1">
+                {% if p1 %}
+                    <span class="avatar-dot avatar-lg" style="background:{{ p1.guest_id | default('') | avatar_color_filter }}">
+                        {{ (p1.display_name or 'P2')[0] | upper }}
+                    </span>
+                    <span class="waiting-player-name">{{ p1.display_name or 'Player 2' }}</span>
+                    <span class="waiting-badge joined">joined</span>
+                {% else %}
+                    <span class="avatar-dot avatar-lg waiting-avatar-empty">?</span>
+                    <span class="waiting-player-name" id="waiting-opp-name">Waiting for opponent…</span>
+                    <span class="waiting-spinner" id="waiting-spinner"></span>
+                {% endif %}
+            </div>
+        </div>
+
+        {% if invite_url %}
+        <div class="waiting-invite">
+            <p class="waiting-invite-label">Share this link to invite a friend:</p>
+            <div class="waiting-invite-row">
+                <input id="invite-url-input" class="waiting-invite-url" type="text" readonly value="{{ invite_url }}">
+                <button id="copy-invite-btn" class="btn-copy-invite" title="Copy link">📋 Copy</button>
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- ── Waiting timer ── -->
+        <p class="waiting-timer-line">
+            Waiting&nbsp;<span id="waiting-timer" class="waiting-timer">0s</span>
+        </p>
+
+        <!-- ── Pre-game chat ── -->
+        <div class="waiting-chat">
+            <div id="chat-messages" class="chat-messages">
+                {% for m in blob.chat or [] %}
+                <div class="chat-msg">
+                    <span class="chat-name">{{ m.display_name | e }}</span>{{ m.message | e }}
+                </div>
+                {% endfor %}
+            </div>
+            <div class="chat-input-row">
+                <input type="text" id="chat-input" class="chat-input"
+                       placeholder="Say something…" maxlength="200" autocomplete="off">
+                <button id="chat-send" class="chat-send">Send</button>
+            </div>
+        </div>
+
+        <div class="waiting-actions">
+            <button id="cancel-room-btn" class="btn-waiting-cancel">Cancel room</button>
+        </div>
+
+        <p id="waiting-status-msg" class="waiting-status-msg">
+            {% if blob.players|length >= 2 %}Both players joined — starting game…{% else %}Waiting for second player to join{% endif %}
+        </p>
+    </div>
+</div>
+
+<!-- ════════════════ GAME BOARD ════════════════ -->
+<div id="game-board-wrap" class="{% if not game_active %}hidden{% endif %}">
+<div class="board{% if game_active %}{% if human_is_current and not round_over and not has_pending_bot %} player-active{% elif not round_over and not has_pending_bot %} bot-active{% endif %}{% endif %}">
+
+    <!-- ── Opponent Zone ── -->
+    <div class="zone opp-zone">
+        <div class="zone-meta">
+            <span class="zone-name opp-name">
+                <span class="conn-dot conn-dot-opp" id="opp-conn-dot" title="Opponent connection"></span>
+                <span class="bot-mood" title="Opponent mood">{{ bot_mood }}</span>
+                {{ bot_name }}
+            </span>
+            <span class="zone-stats">
+                {{ bot_captured_count }} captured &nbsp;·&nbsp;
+                <span class="chk-star">{{ bot_chkobbas }}✦</span>
+            </span>
+            <span class="zone-status">
+                {% if game_active and not human_is_current and not round_over and not has_pending_bot %}
+                    <span class="badge thinking">Thinking…</span>
+                {% endif %}
+            </span>
+        </div>
+        <div class="zone-cards" id="bot-cards">
+            {% for _ in range(bot_hand_count) %}<div class="card card-back"></div>{% endfor %}
+            {% if bot_hand_count == 0 and game_active %}<span class="zone-empty">No cards</span>{% endif %}
+        </div>
+    </div>
+
+    <!-- ── Felt Table ── -->
+    <div class="felt">
+        <span class="felt-label">Table</span>
+        <div class="felt-logo" aria-hidden="true"></div>
+        <div class="felt-cards" id="table-cards">
+            {% if table_slots and (table_slots | map(attribute='card') | select | list) %}
+                {% for slot in table_slots %}
+                    {% if slot.card %}
+                    <div class="card table-card {% if '♥' in slot.card or '♦' in slot.card %}red-suit{% endif %}{% if human_is_current and not round_over and not has_pending_bot %} selectable{% endif %}"
+                        data-table-index="{{ slot.table_index }}"
+                        data-card-str="{{ slot.card }}">{{ slot.card }}</div>
+                    {% else %}
+                    <div class="card table-slot-empty" aria-hidden="true"></div>
+                    {% endif %}
+                {% endfor %}
+            {% else %}
+                <p class="felt-empty">{% if game_active %}No cards on table{% endif %}</p>
+            {% endif %}
+        </div>
+        <div class="deck-badge" aria-label="{{ deck_remaining }} cards in deck">
+            {% if deck_remaining > 0 %}
+            <div class="deck-stack" aria-hidden="true">
+                <div class="card card-back pile-card"></div>
+                <div class="card card-back pile-card"></div>
+                <div class="card card-back pile-card"></div>
+            </div>
+            {% endif %}
+            <span class="deck-count">{{ deck_remaining }}</span>
+        </div>
+    </div>
+
+    <!-- ── Player Zone ── -->
+    <div class="zone player-zone{% if game_active and human_is_current and not round_over and not has_pending_bot %} your-turn{% endif %}">
+        <div class="zone-cards" id="hand-cards">
+            {% if human_hand %}
+                {% for card in human_hand %}
+                <div class="card hand-card {% if '♥' in card or '♦' in card %}red-suit{% endif %}{% if human_is_current and not round_over and not has_pending_bot %} selectable{% endif %}"
+                    data-hand-index="{{ loop.index0 }}">{{ card }}</div>
+                {% endfor %}
+            {% elif game_active %}
+                <span class="zone-empty">No cards</span>
+            {% endif %}
+        </div>
+        <div class="zone-meta zone-meta-bottom">
+            <span class="zone-stats">
+                {{ human_captured_count }} captured &nbsp;·&nbsp;
+                <span class="chk-star">{{ human_chkobbas }}✦</span>
+            </span>
+            <span class="zone-name player-name">
+                <span class="avatar-dot" style="background:{{ avatar_color }}">{{ avatar_initial }}</span>
+                <span>{{ display_name }}</span>
+            </span>
+            <span class="zone-status">
+                {% if game_active and human_is_current and not round_over and not has_pending_bot %}
+                    <span class="badge your-turn-badge">Your turn</span>
+                {% endif %}
+            </span>
+        </div>
+    </div>
+
+</div><!-- /board -->
+
+<!-- ── Hint Bar ── -->
+{% if game_active and not round_over and not match_over %}
+<div class="hint-bar">
+    <p id="selection-hint" class="hint-txt">
+        {%- if not human_is_current -%}
+            Opponent is thinking…
+        {%- else -%}
+            Tap a card from your hand to play
+        {%- endif -%}
+    </p>
+    <form action="#" method="post" id="play-form" class="hint-form"
+          style="{{ '' if human_is_current and not has_pending_bot else 'display:none' }}">
+        <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="hand_index" id="hand-index" value="">
+        <input type="hidden" name="table_indices" id="table-indices" value="">
+        <button type="submit" class="btn-play" id="play-button" disabled>Play</button>
+        <button type="button" class="btn-reset-sel" id="reset-selection">✕</button>
+    </form>
+</div>
+{% endif %}
+
+<!-- ── Round Over ── -->
+{% if show_next_round %}
+<div class="notebook-overlay">
+    <div class="notebook-card">
+        <div class="nb-title">أرقم! — Chkobba</div>
+        <div class="nb-subtitle">round results</div>
+        <div class="nb-columns">
+            <span>You</span>
+            <span>{{ bot_name }}</span>
+        </div>
+        {% for row in round_breakdown %}
+        <div class="nb-row">
+            <span class="nb-label">{{ row.label }}</span>
+            <span class="nb-score{% if row.you == 0 %} zero{% endif %}">
+                {{- '+' + row.you|string if row.you > 0 else ('—' if row.you == 0 else row.you|string) -}}
+            </span>
+            <span class="nb-score nb-score-right{% if row.bot == 0 %} zero{% endif %}">
+                {{- '+' + row.bot|string if row.bot > 0 else ('—' if row.bot == 0 else row.bot|string) -}}
+            </span>
+        </div>
+        {% endfor %}
+        <div class="nb-divider"></div>
+        <div class="nb-total-row">
+            <span class="nb-total-label">Total</span>
+            <span class="nb-total-score">{{ final_points[0] }}</span>
+            <span class="nb-total-score nb-total-right">{{ final_points[1] }}</span>
+        </div>
+        <p class="nb-match">Match running total: {{ match_scores[0] }} – {{ match_scores[1] }}</p>
+        <div class="nb-continue">
+            <!-- In multiplayer, next_round is triggered via SocketIO when server is ready -->
+            <button class="btn-stamp" onclick="window.location.reload()">Next Round →</button>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<!-- ── Match Over ── -->
+{% if match_over %}
+<div class="overlay active" id="match-over-modal">
+    <div class="modal">
+        {% if match_winner == 0 %}
+            <div class="modal-icon">🏆</div>
+            <h2 class="modal-title winner">You Win!</h2>
+        {% elif match_winner == 1 %}
+            <div class="modal-icon">😏</div>
+            <h2 class="modal-title loser">{{ bot_name }} Wins</h2>
+        {% else %}
+            <div class="modal-icon">🤝</div>
+            <h2 class="modal-title">It's a Tie</h2>
+        {% endif %}
+        <p class="modal-final">{{ match_scores[0] }} – {{ match_scores[1] }}</p>
+        <div class="modal-actions">
+            <a href="{{ url_for('lobby') }}" class="btn-deal" style="text-decoration:none">Back to Lobby</a>
+            {% if game_mode == "1v1" %}
+            <button id="rematch-btn" class="btn-deal btn-rematch">Rematch?</button>
+            {% endif %}
+        </div>
+        <!-- Rematch status messages (hidden by default) -->
+        <p id="rematch-status" class="rematch-status" style="display:none"></p>
+    </div>
+</div>
+
+<!-- Incoming rematch offer overlay (hidden until received) -->
+<div id="rematch-offer-overlay" class="overlay" style="display:none">
+    <div class="modal">
+        <div class="modal-icon">🔄</div>
+        <h2 class="modal-title" id="rematch-from-name">Rematch offered!</h2>
+        <p id="rematch-offer-msg" class="modal-final" style="font-size:.95rem">Play again?</p>
+        <div class="modal-actions">
+            <button id="rematch-accept-btn" class="btn-deal">Accept</button>
+            <button id="rematch-decline-btn" class="btn-deal btn-secondary">Decline</button>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+</div><!-- /game-board-wrap -->
+
+<!-- ════ Data + Scripts ════ -->
+<script type="application/json" id="capture-map-data">{{ capture_map | tojson | safe }}</script>
+<script type="application/json" id="page-state">{{ {
+    "show_start_screen":            false,
+    "has_pending_bot":              has_pending_bot,
+    "human_is_current":             human_is_current,
+    "capture_map":                  capture_map,
+    "pending_bot_played_card":      pending_bot_played_card,
+    "pending_bot_is_capture":       pending_bot_is_capture,
+    "pending_bot_captured_indices": pending_bot_captured_indices,
+    "pending_bot_is_chkobba":       pending_bot_is_chkobba,
+    "round_over":                   round_over,
+    "match_over":                   match_over,
+    "human_hand":                   human_hand,
+    "table_slots":                  table_slots,
+    "human_captured_count":         human_captured_count,
+    "human_chkobbas":               human_chkobbas,
+    "bot_hand_count":               bot_hand_count,
+    "bot_captured_count":           bot_captured_count,
+    "bot_chkobbas":                 bot_chkobbas,
+    "deck_remaining":               deck_remaining,
+    "match_scores":                 match_scores,
+    "bot_mood":                     bot_mood,
+    "bot_name":                     bot_name,
+    "last_played_card":             last_played_card,
+    "last_played_by":               last_played_by,
+    "room_id":                      blob.room_id,
+    "my_seat":                      my_seat,
+    "game_mode":                    game_mode,
+    "display_name":                 display_name,
+    "avatar_initial":               avatar_initial,
+    "avatar_color":                 avatar_color,
+    "game_active":                  game_active
+} | tojson | safe }}</script>
+
+{% endif %}{# /room_full else #}
+
+<!-- ════ Card enhancer ════ -->
+<script>
+(function(){
+    function enhance(el){
+        var t=el.textContent.trim();
+        if(!t||el.classList.contains('card-back')||el.classList.contains('table-slot-empty'))return;
+        var suit=t.slice(-1),rank=t.slice(0,-1);
+        if(!rank)return;
+        el.innerHTML='<span class="c-tl">'+rank+'<br>'+suit+'</span>'
+                    +'<span class="c-ctr">'+suit+'</span>'
+                    +'<span class="c-br">'+rank+'<br>'+suit+'</span>';
+    }
+    document.querySelectorAll('.card:not(.card-back):not(.table-slot-empty)').forEach(enhance);
+})();
+</script>
+
+<!-- ════ Initial scatter on table cards ════ -->
+<script>
+(function(){
+    var rng=function(a,b){return Math.random()*(b-a)+a;};
+    var idx=0;
+    document.querySelectorAll('#table-cards .table-card').forEach(function(card){
+        var topRow=(idx%2===0); idx++;
+        if(card.classList.contains('table-slot-empty')) return;
+        var yBias=topRow?-6:6;
+        card.style.setProperty('--rx',rng(-7,7).toFixed(1)+'deg');
+        card.style.setProperty('--tx',rng(-9,9).toFixed(1)+'px');
+        card.style.setProperty('--ty',(yBias+rng(-4,4)).toFixed(1)+'px');
+    });
+})();
+</script>
+
+<!-- ════ Chkobba sweep animation ════ -->
+<script>
+(function(){
+    var GOLD_COLORS=['#d4af37','#f0d060','#ffe94d','#c9972a','#ffd700'];
+    function spawnParticles(cx,cy){
+        for(var i=0;i<32;i++){(function(){
+            var p=document.createElement('div'); p.className='chk-particle';
+            var size=3+Math.random()*7, angle=Math.random()*Math.PI*2;
+            var speed=55+Math.random()*130, vx=Math.cos(angle)*speed, vy=Math.sin(angle)*speed-55;
+            var col=GOLD_COLORS[Math.floor(Math.random()*GOLD_COLORS.length)];
+            var dur=700+Math.random()*500;
+            p.style.cssText='width:'+size+'px;height:'+size+'px;background:'+col+';';
+            document.body.appendChild(p);
+            var start=null;
+            function step(t){
+                if(!start) start=t;
+                var dt=t-start;
+                if(dt>=dur){if(p.parentNode)p.parentNode.removeChild(p);return;}
+                var f=dt/dur;
+                p.style.left=(cx+vx*(dt/1000))+'px';
+                p.style.top=(cy+vy*(dt/1000)+0.5*320*(dt/1000)*(dt/1000))+'px';
+                p.style.opacity=1-f;
+                requestAnimationFrame(step);
+            }
+            requestAnimationFrame(step);
+        })();}
+    }
+    function showChkobbaText(cx,cy){
+        var el=document.createElement('div'); el.className='chkobba-text';
+        el.textContent='CHKOBBA!'; el.style.left=cx+'px'; el.style.top=cy+'px';
+        document.body.appendChild(el);
+        requestAnimationFrame(function(){
+            el.style.transition='transform 200ms cubic-bezier(.2,1.5,.4,1)';
+            el.style.transform='translate(-50%,-50%) scale(1)';
+            setTimeout(function(){
+                el.style.transition='opacity 300ms ease'; el.style.opacity='0';
+                setTimeout(function(){if(el.parentNode)el.parentNode.removeChild(el);},310);
+            },600);
+        });
+    }
+    function playTakSound(){
+        try{var a=new Audio('/static/sounds/tak.mp3');a.volume=0.5;a.play().catch(function(){});}catch(e){}
+    }
+    window.chkobbaAnimation=function(centerEl,onComplete){
+        var r=(typeof centerEl.getBoundingClientRect==='function')?centerEl.getBoundingClientRect():centerEl;
+        var cx=r.left+r.width/2, cy=r.top+r.height/2;
+        var felt=document.querySelector('.felt');
+        if(felt){felt.classList.add('chkobba-flash');setTimeout(function(){felt.classList.remove('chkobba-flash');},500);}
+        spawnParticles(cx,cy); showChkobbaText(cx,cy); playTakSound();
+        setTimeout(onComplete,1200);
+    };
+})();
+</script>
+
+<!-- ════ AJAX Game Engine ════ -->
+<script>
+(function(){
+'use strict';
+
+var EASE='cubic-bezier(0.22,1,0.36,1)';
+var CSRF=(document.querySelector('meta[name="csrf-token"]')||{}).getAttribute('content')||'';
+var _busy=false;
+var _state=null;
+
+function _placeOptimistic(slots,card,isHuman){
+    var par=isHuman?1:0;
+    for(var i=0;i<slots.length;i++){
+        if(slots[i].card===null&&i%2===par){slots[i]={card:card,table_index:null};return;}
+    }
+    if(slots.length%2!==par) slots.push({card:null,table_index:null});
+    slots.push({card:card,table_index:null});
+}
+
+function predictPlay(state,handIdx,tableIdxs){
+    var playedCard=state.human_hand[handIdx];
+    var isCapture=tableIdxs&&tableIdxs.length>0;
+    var pred={
+        show_start_screen:false, round_over:false, match_over:false,
+        human_is_current:false, has_pending_bot:false,
+        pending_bot_played_card:null, pending_bot_is_capture:false,
+        pending_bot_captured_indices:[], pending_bot_is_chkobba:false,
+        match_scores:state.match_scores?state.match_scores.slice():[0,0],
+        bot_mood:state.bot_mood||'😐', bot_name:state.bot_name||'Opponent',
+        bot_hand_count:state.bot_hand_count, bot_captured_count:state.bot_captured_count,
+        bot_chkobbas:state.bot_chkobbas, human_chkobbas:state.human_chkobbas,
+        deck_remaining:state.deck_remaining, capture_map:{}, commentary_toast:null,
+        last_played_card:playedCard, last_played_by:'human',
+        human_hand:state.human_hand.filter(function(_,i){return i!==handIdx;}),
+        table_slots:state.table_slots.map(function(s){return{card:s.card,table_index:s.table_index};}),
+        human_captured_count:state.human_captured_count
+    };
+    if(isCapture){
+        tableIdxs.forEach(function(ti){
+            for(var i=0;i<pred.table_slots.length;i++){
+                if(pred.table_slots[i].table_index===ti&&pred.table_slots[i].card!==null){
+                    pred.table_slots[i]={card:null,table_index:null};break;
+                }
+            }
+        });
+        pred.human_captured_count+=tableIdxs.length+1;
+        var rem=pred.table_slots.filter(function(s){return s.card!==null;});
+        if(rem.length===0) pred.human_chkobbas++;
+    } else {
+        _placeOptimistic(pred.table_slots,playedCard,true);
+    }
+    return pred;
+}
+
+function statesMatch(pred,srv){
+    var ph=pred.human_hand.slice().sort(),sh=(srv.human_hand||[]).slice().sort();
+    if(ph.join()!==sh.join()) return false;
+    if(pred.human_captured_count!==srv.human_captured_count) return false;
+    if(pred.human_chkobbas!==srv.human_chkobbas) return false;
+    var pt=pred.table_slots.filter(function(s){return s.card;}).map(function(s){return s.card;}).sort();
+    var st=(srv.table_slots||[]).filter(function(s){return s.card;}).map(function(s){return s.card;}).sort();
+    if(pt.join()!==st.join()) return false;
+    return true;
+}
+
+function reconcile(serverState){
+    var sels=['#hand-cards','#table-cards','.player-zone .zone-stats'];
+    var els=sels.map(function(s){return document.querySelector(s);}).filter(Boolean);
+    els.forEach(function(el){el.style.transition='opacity .2s';el.style.opacity='0.5';});
+    setTimeout(function(){
+        els.forEach(function(el){el.style.opacity='';el.style.transition='';});
+        applyState(serverState,null);
+    },200);
+}
+
+function onServerConfirm(serverState){
+    if(serverState.commentary_toast&&window.showCommentaryToast)
+        window.showCommentaryToast(serverState.commentary_toast);
+    if(!serverState.has_pending_bot) return;
+    var bc=document.getElementById('bot-cards');
+    if(bc){
+        bc.innerHTML=buildBotHand(serverState.bot_hand_count,true,serverState.pending_bot_played_card);
+        var bcc=bc.querySelector('.bot-capture-card'); if(bcc) enhance(bcc);
+    }
+    var hint=document.getElementById('selection-hint');
+    if(hint) hint.textContent='Bot is playing\u2026';
+    var bSt=document.querySelector('.opp-zone .zone-status');
+    if(bSt) bSt.innerHTML='<span class="badge thinking">Playing\u2026</span>';
+    scheduleBotTurn(serverState);
+}
+
+var _dot=document.getElementById('syncing-dot');
+function showSync(){if(_dot) _dot.classList.add('active');}
+function hideSync(){if(_dot) _dot.classList.remove('active');}
+
+function isRed(card){return card&&(card.indexOf('♥')>=0||card.indexOf('♦')>=0);}
+function rectObj(r){return{left:r.left,top:r.top,width:r.width,height:r.height};}
+
+function enhance(el){
+    var t=el.textContent.trim();
+    if(!t||el.classList.contains('card-back')||el.classList.contains('table-slot-empty'))return;
+    var suit=t.slice(-1),rank=t.slice(0,-1);
+    if(!rank)return;
+    el.innerHTML='<span class="c-tl">'+rank+'<br>'+suit+'</span>'
+               +'<span class="c-ctr">'+suit+'</span>'
+               +'<span class="c-br">'+rank+'<br>'+suit+'</span>';
+}
+
+function apiPost(url,data){
+    if(_busy) return Promise.reject('busy');
+    _busy=true; showSync();
+    var fd=new FormData();
+    fd.append('_csrf_token',CSRF);
+    for(var k in data) fd.append(k,data[k]);
+    return fetch(url,{method:'POST',body:fd})
+        .then(function(r){if(!r.ok) throw new Error('HTTP '+r.status);return r.json();})
+        .finally(function(){_busy=false;hideSync();});
+}
+
+function buildHand(cards,sel){
+    if(!cards||!cards.length) return '<span class="zone-empty">No cards</span>';
+    return cards.map(function(c,i){
+        return '<div class="card hand-card'+(isRed(c)?' red-suit':'')+(sel?' selectable':'')+
+               '" data-hand-index="'+i+'">'+c+'</div>';
+    }).join('');
+}
+
+function buildTable(slots,sel,lastCard,lastBy){
+    if(!slots) return '<p class="felt-empty">No cards on table</p>';
+    var hasSome=slots.some(function(s){return s.card;});
+    if(!hasSome) return '<p class="felt-empty">No cards on table</p>';
+    return slots.map(function(slot){
+        if(!slot.card) return '<div class="card table-slot-empty" aria-hidden="true"></div>';
+        var fly=(slot.card===lastCard&&lastBy==='human')?' fly-from-human':
+                (slot.card===lastCard&&lastBy==='bot')?' fly-from-bot':'';
+        var ti=(slot.table_index!==null&&slot.table_index!==undefined)?slot.table_index:'';
+        return '<div class="card table-card'+(isRed(slot.card)?' red-suit':'')+(sel?' selectable':'')+fly+
+               '" data-table-index="'+ti+'" data-card-str="'+slot.card+'">'+slot.card+'</div>';
+    }).join('');
+}
+
+function buildBotHand(count,hasPending,pendingCard){
+    var h='';
+    for(var i=0;i<count;i++) h+='<div class="card card-back"></div>';
+    if(hasPending&&pendingCard)
+        h+='<div class="card bot-capture-card'+(isRed(pendingCard)?' red-suit':'')+'">'+pendingCard+'</div>';
+    if(!count&&!hasPending) h+='<span class="zone-empty">No cards</span>';
+    return h;
+}
+
+function scatterAndFlip(container,snap){
+    var rng=function(a,b){return Math.random()*(b-a)+a;};
+    var cards=Array.from(container.querySelectorAll('.table-card'));
+    var idx=0;
+    cards.forEach(function(c){
+        var top=(idx%2===0); idx++;
+        if(c.classList.contains('table-slot-empty')) return;
+        var yb=top?-6:6;
+        c.style.setProperty('--rx',rng(-7,7).toFixed(1)+'deg');
+        c.style.setProperty('--tx',rng(-9,9).toFixed(1)+'px');
+        c.style.setProperty('--ty',(yb+rng(-4,4)).toFixed(1)+'px');
+    });
+    if(!snap) return;
+    var newCard=container.querySelector('.fly-from-human,.fly-from-bot');
+    var fromBot=newCard&&newCard.classList.contains('fly-from-bot');
+    var fromRect=fromBot?snap.bot:snap.played;
+    var toAnim=[];
+    cards.forEach(function(c){
+        if(c.classList.contains('table-slot-empty')) return;
+        var isNew=(c===newCard);
+        var old=isNew?fromRect:(snap.table&&snap.table[c.dataset.cardStr]);
+        if(!old) return;
+        var nr=c.getBoundingClientRect();
+        var dx=(old.left+old.width/2)-(nr.left+nr.width/2);
+        var dy=(old.top+old.height/2)-(nr.top+nr.height/2);
+        if(!isNew&&Math.abs(dx)<1.5&&Math.abs(dy)<1.5) return;
+        var rx=c.style.getPropertyValue('--rx')||'0deg';
+        var tx=c.style.getPropertyValue('--tx')||'0px';
+        var ty=c.style.getPropertyValue('--ty')||'0px';
+        c.style.animation='none'; c.style.transition='none';
+        c.style.zIndex=isNew?'50':'20';
+        c.style.transform='rotate('+rx+') translate('+tx+','+ty+')'+
+                          ' translate('+dx.toFixed(1)+'px,'+dy.toFixed(1)+'px)'+
+                          (isNew?' scale(1.05)':'');
+        toAnim.push({el:c,isNew:isNew});
+    });
+    if(!toAnim.length) return;
+    requestAnimationFrame(function(){
+        requestAnimationFrame(function(){
+            toAnim.forEach(function(it){
+                it.el.style.transition='transform 400ms '+EASE+(it.isNew?', box-shadow 400ms ease':'');
+                it.el.style.transform='';
+                if(it.isNew) it.el.style.boxShadow='0 18px 36px rgba(0,0,0,.55)';
+                setTimeout(function(){
+                    it.el.style.zIndex='';it.el.style.transition='';it.el.style.animation='';
+                    if(it.isNew) it.el.style.boxShadow='';
+                },420);
+            });
+        });
+    });
+}
+
+function takeSnap(fromEl,isBot){
+    var snap={played:null,bot:null,table:{}};
+    if(fromEl){
+        var r=rectObj(fromEl.getBoundingClientRect());
+        if(isBot) snap.bot=r; else snap.played=r;
+    }
+    var tc=document.getElementById('table-cards');
+    if(tc) tc.querySelectorAll('.table-card:not(.table-slot-empty)').forEach(function(el){
+        var cs=el.dataset.cardStr; if(cs) snap.table[cs]=rectObj(el.getBoundingClientRect());
+    });
+    return snap;
+}
+
+function applyState(st,snap){
+    // If game board is hidden, show it on first real state
+    if(st&&!st.show_start_screen&&!st.round_over&&!st.match_over){
+        var wrap=document.getElementById('game-board-wrap');
+        if(wrap&&wrap.classList.contains('hidden')){
+            wrap.classList.remove('hidden');
+            var ws=document.getElementById('waiting-screen');
+            if(ws) ws.classList.add('hidden');
+        }
+    }
+
+    if(!st||st.show_start_screen){window.location.href='/';return;}
+    if(st.round_over||st.match_over){window.location.reload();return;}
+
+    var human=!!(st.human_is_current&&!st.round_over&&!st.has_pending_bot);
+    var oppName=st.bot_name||'Opponent';
+
+    var board=document.querySelector('.board');
+    if(board){board.classList.toggle('player-active',human);board.classList.toggle('bot-active',!human);}
+
+    var hudY=document.querySelector('.hud-score.you .hs-val');
+    var hudB=document.querySelector('.hud-score.bot .hs-val');
+    if(hudY) hudY.textContent=st.match_scores[0];
+    if(hudB) hudB.textContent=st.match_scores[1];
+
+    var moodEl=document.querySelector('.bot-mood');
+    if(moodEl) moodEl.textContent=st.bot_mood;
+    var bStats=document.querySelector('.opp-zone .zone-stats');
+    if(bStats) bStats.innerHTML=st.bot_captured_count+' captured &nbsp;·&nbsp;<span class="chk-star">'+st.bot_chkobbas+'✦</span>';
+    var bStatus=document.querySelector('.opp-zone .zone-status');
+    if(bStatus) bStatus.innerHTML=!st.human_is_current?'<span class="badge thinking">Thinking\u2026</span>':'';
+
+    var dCount=document.querySelector('.deck-count');
+    if(dCount) dCount.textContent=st.deck_remaining;
+    var dStack=document.querySelector('.deck-stack');
+    if(dStack) dStack.style.display=st.deck_remaining>0?'':'none';
+
+    var pZone=document.querySelector('.player-zone');
+    if(pZone) pZone.classList.toggle('your-turn',human);
+    var pStats=document.querySelector('.player-zone .zone-stats');
+    if(pStats) pStats.innerHTML=st.human_captured_count+' captured &nbsp;·&nbsp;<span class="chk-star">'+st.human_chkobbas+'✦</span>';
+    var pStatus=document.querySelector('.player-zone .zone-status');
+    if(pStatus) pStatus.innerHTML=human?'<span class="badge your-turn-badge">Your turn</span>':'';
+
+    var hint=document.getElementById('selection-hint');
+    if(hint) hint.textContent=human?'Tap a card from your hand to play':(oppName+' is thinking\u2026');
+    var playForm=document.getElementById('play-form');
+    if(playForm) playForm.style.display=human?'':'none';
+
+    var tc=document.getElementById('table-cards');
+    if(tc){
+        tc.innerHTML=buildTable(st.table_slots,human,st.last_played_card,st.last_played_by);
+        tc.querySelectorAll('.table-card:not(.table-slot-empty)').forEach(enhance);
+        scatterAndFlip(tc,snap);
+    }
+
+    var hc=document.getElementById('hand-cards');
+    if(hc){
+        hc.innerHTML=buildHand(st.human_hand,human);
+        hc.querySelectorAll('.hand-card').forEach(enhance);
+    }
+
+    var bc=document.getElementById('bot-cards');
+    if(bc){
+        bc.innerHTML=buildBotHand(st.bot_hand_count,st.has_pending_bot,st.pending_bot_played_card);
+        var bcc=bc.querySelector('.bot-capture-card'); if(bcc) enhance(bcc);
+    }
+
+    if(human) attachListeners(st.capture_map);
+
+    _state=st;
+}
+
+function scheduleBotTurn(st){
+    // 1v1: no bot to schedule — server drives turns via SocketIO
+    return;
+}
+
+// ── playCard ──────────────────────────────────────────────────────────────
+function playCard(handIdx,tableIdxs,handEl,tableEls,isCapture,isChk){
+    if(_busy) return;
+
+    var captureData=tableIdxs.map(function(ti){
+        for(var i=0;i<(_state.table_slots||[]).length;i++){
+            if(_state.table_slots[i].table_index===ti) return window.cardStrToData(_state.table_slots[i].card);
+        }
+        return null;
+    }).filter(Boolean);
+
+    var snap=takeSnap(handEl,false);
+
+    var pred=predictPlay(_state,handIdx,tableIdxs);
+    _gameEngine._lastPredicted=pred;
+
+    if(isChk&&window.chkobbaAnimation){
+        var felt=document.querySelector('.felt');
+        window.chkobbaAnimation(felt||document.body,function(){});
+    }
+
+    if(window.Game&&window.Game.socket&&window.Game.socket.connected&&_state){
+        var playedCard=window.cardStrToData(_state.human_hand[handIdx]);
+        applyState(pred,snap);
+        showSync();
+        window.Game.playCard(playedCard,captureData);
+        return;
+    }
+    // Fallback (disconnected) — show optimistic state only
+    applyState(pred,snap);
+}
+
+// ── attachListeners ───────────────────────────────────────────────────────
+function attachListeners(captureMap){
+    var hCards=document.querySelectorAll('#hand-cards .hand-card');
+    var tCards=document.querySelectorAll('#table-cards .table-card:not(.table-slot-empty)');
+    var playBtn=document.getElementById('play-button');
+    var resetBtn=document.getElementById('reset-selection');
+    var selHand=null, selHandEl=null;
+    var selTable=new Set();
+    var valid=false;
+
+    function tip(t){var h=document.getElementById('selection-hint');if(h)h.textContent=t;}
+    function refresh(){
+        var moves=captureMap[selHand]||[];
+        valid=false;
+        tCards.forEach(function(c){c.classList.remove('can-capture','capture-glow');});
+        if(selHand===null){
+            tCards.forEach(function(c){c.classList.remove('selectable');});
+            if(playBtn){playBtn.disabled=true;}
+            tip('Tap a card from your hand to play');
+            return;
+        }
+        var canCapture=moves.some(function(m){return m.is_capture;});
+        var mustCapture=moves.every(function(m){return m.is_capture;});
+        if(!canCapture){
+            tip('No capture — card will go to table. Play it!');
+            valid=true;
+            if(playBtn) playBtn.disabled=false;
+        } else {
+            tCards.forEach(function(c){
+                var idx=parseInt(c.dataset.tableIndex,10);
+                var inAny=moves.some(function(m){return m.table_indices.indexOf(idx)>=0;});
+                c.classList.toggle('can-capture',inAny);
+                c.classList.toggle('capture-glow',inAny&&selTable.has(idx));
+            });
+            var selArr=Array.from(selTable);
+            var match=moves.find(function(m){
+                return m.table_indices.length===selArr.length&&
+                       selArr.every(function(i){return m.table_indices.indexOf(i)>=0;});
+            });
+            if(match){
+                valid=true;
+                tip('Playing move\u2026');
+                if(playBtn) playBtn.disabled=false;
+            } else {
+                tip(mustCapture?'Select table card(s) to capture':'Select table card(s) or play alone');
+                if(playBtn) playBtn.disabled=true;
+            }
+        }
+    }
+
+    function reset(){
+        selHand=null; selHandEl=null; selTable.clear(); valid=false;
+        hCards.forEach(function(c){c.classList.remove('selected');});
+        tCards.forEach(function(c){c.classList.remove('selected','can-capture','capture-glow');});
+        var hiEl=document.getElementById('hand-index');
+        var tiEl=document.getElementById('table-indices');
+        if(hiEl) hiEl.value=''; if(tiEl) tiEl.value='';
+        if(playBtn) playBtn.disabled=true;
+        refresh();
+    }
+
+    hCards.forEach(function(card){
+        card.addEventListener('click',function(){
+            var idx=parseInt(this.dataset.handIndex,10);
+            if(selHand===idx){reset();return;}
+            hCards.forEach(function(c){c.classList.remove('selected');});
+            selHand=idx; selHandEl=this; selTable.clear();
+            this.classList.add('selected');
+            var hiEl=document.getElementById('hand-index');
+            if(hiEl) hiEl.value=idx;
+            refresh();
+            var moves=captureMap[idx]||[];
+            if(moves.length>0&&!moves.some(function(m){return m.is_capture;})){
+                var selT=[], allNE=Array.from(document.querySelectorAll('#table-cards .table-card:not(.table-slot-empty)'));
+                playCard(idx,[],selHandEl,selT,false,false);
+            }
+        });
+    });
+
+    tCards.forEach(function(card){
+        card.addEventListener('click',function(){
+            if(selHand===null) return;
+            var idx=parseInt(this.dataset.tableIndex,10);
+            if(selTable.has(idx)){selTable.delete(idx);this.classList.remove('selected');}
+            else{selTable.add(idx);this.classList.add('selected');}
+            refresh();
+            if(valid){
+                tip('Playing move\u2026');
+                var selT=Array.from(tCards).filter(function(c){return c.classList.contains('selected');});
+                var allNE=Array.from(document.querySelectorAll('#table-cards .table-card:not(.table-slot-empty)'));
+                var isChk=selT.length>0&&selT.length===allNE.length;
+                playCard(parseInt(selHand),Array.from(selTable),selHandEl,selT,true,isChk);
+            }
+        });
+    });
+
+    var form=document.getElementById('play-form');
+    if(form&&!form._ajaxBound){
+        form._ajaxBound=true;
+        form.addEventListener('submit',function(e){
+            e.preventDefault();
+            if(!valid||selHand===null) return;
+            var selT=Array.from(tCards).filter(function(c){return c.classList.contains('selected');});
+            var allNE=Array.from(document.querySelectorAll('#table-cards .table-card:not(.table-slot-empty)'));
+            var isChk=selT.length>0&&selT.length===allNE.length;
+            playCard(parseInt(selHand),Array.from(selTable),selHandEl,selT,selT.length>0,isChk);
+        });
+    }
+    if(resetBtn) resetBtn.addEventListener('click',reset);
+}
+
+(function init(){
+    var ps=null;
+    try{var el=document.getElementById('page-state');if(el) ps=JSON.parse(el.textContent);}catch(e){}
+    if(!ps||ps.round_over||ps.match_over) return;
+    _state=ps;
+    if(ps.game_active&&!ps.has_pending_bot&&ps.human_is_current) attachListeners(ps.capture_map);
+})();
+
+window._gameEngine={
+    applyState:applyState, statesMatch:statesMatch, reconcile:reconcile,
+    getState:function(){return _state;}, setState:function(s){_state=s;},
+    _lastPredicted:null,
+};
+})(); // end AJAX engine
+</script>
+
+<!-- ════ SocketIO — Multiplayer Init ════ -->
+<script>
+document.addEventListener('DOMContentLoaded', function(){
+    var CSRF = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+    var ps = null;
+    try{ var el=document.getElementById('page-state'); if(el) ps=JSON.parse(el.textContent); }catch(e){}
+    if(!ps || !ps.room_id || ps.room_id === '__no_room__') return;
+
+    // window._gameEngine may not exist yet on the waiting screen (game_active=false).
+    // Game.init() must still run so game_join is emitted and the game can start.
+    window.Game.init(ps.room_id, ps.my_seat || 0);
+
+    // ── state_snapshot handler needs the game engine; it may not exist yet ──
+    // ── When state_snapshot arrives on a page that loaded before game_active,
+    //    transition from waiting/countdown to game board immediately.
+    //    Covers: bot rooms (solo), and late reconnects to active 1v1 games.
+    if(!ps.game_active){
+        window.Game.socket.on('state_snapshot', function(){
+            var ws  = document.getElementById('waiting-screen');
+            var cdo = document.getElementById('countdown-overlay');
+            var gbw = document.getElementById('game-board-wrap');
+            if(ws)  ws.classList.add('hidden');
+            if(cdo) cdo.classList.add('hidden');
+            if(gbw) gbw.classList.remove('hidden');
+        });
+    }
+
+    // ── 3-2-1 Countdown before game starts ───────────────────────────────
+    window.Game.on('match_starting', function(data){
+        var ws  = document.getElementById('waiting-screen');
+        var cdo = document.getElementById('countdown-overlay');
+        if(ws) ws.classList.add('hidden');
+
+        var count = (data.countdown == null ? 3 : data.countdown);
+
+        // countdown=0 means we missed the countdown (reconnect / reload).
+        // Skip straight to revealing the game board.
+        if(count <= 0){
+            if(cdo) cdo.classList.add('hidden');
+            var gbw = document.getElementById('game-board-wrap');
+            if(gbw) gbw.classList.remove('hidden');
+            return;
+        }
+
+        if(!cdo) return;   // defensive guard
+
+        // Fill in player names.
+        var names = data.player_names || [];
+        var p0El = document.getElementById('cdo-p0');
+        var p1El = document.getElementById('cdo-p1');
+        if(p0El) p0El.textContent = names[0] || 'Player 1';
+        if(p1El) p1El.textContent = names[1] || 'Player 2';
+
+        cdo.classList.remove('hidden');
+        var numEl = document.getElementById('countdown-number');
+        if(numEl) numEl.textContent = count;
+
+        var iv = setInterval(function(){
+            count--;
+            if(numEl){
+                numEl.textContent = count > 0 ? count : 'Go!';
+                numEl.style.transform = 'scale(1.25)';
+                setTimeout(function(){ numEl.style.transform = ''; }, 180);
+            }
+            if(count <= 0){
+                clearInterval(iv);
+                setTimeout(function(){
+                    cdo.classList.add('hidden');
+                    var gbw = document.getElementById('game-board-wrap');
+                    if(gbw) gbw.classList.remove('hidden');
+                }, 600);
+            }
+        }, 1000);
+    });
+
+    // ── Second player joined while on waiting screen ──────────────────────
+    window.Game.on('room_player_joined', function(data){
+        var slotEl = document.getElementById('wp-1');
+        if(slotEl && !data.is_self){
+            slotEl.classList.remove('waiting-player-empty');
+            slotEl.innerHTML =
+                '<span class="avatar-dot avatar-lg" style="background:'+(data.avatar_color||'#888')+'">'
+                +   (data.avatar_initial || '?')
+                + '</span>'
+                + '<span class="waiting-player-name">'+(data.display_name||'Opponent')+'</span>'
+                + '<span class="waiting-badge joined">joined</span>';
+        }
+        var msg = document.getElementById('waiting-status-msg');
+        if(msg) msg.textContent = 'Both players joined \u2014 starting game\u2026';
+    });
+
+    // ── Waiting state update (e.g. reconnect during countdown) ───────────
+    window.Game.on('waiting_state', function(data){
+        if(data.status === 'starting'){
+            var msg = document.getElementById('waiting-status-msg');
+            if(msg) msg.textContent = data.message || 'Game is starting\u2026';
+        }
+    });
+
+    // ── Room closed / cancelled ───────────────────────────────────────────
+    window.Game.on('room_closed', function(){
+        window.location.href = '/lobby';
+    });
+
+    // ── Pre-game chat ─────────────────────────────────────────────────────
+    window.Game.on('chat_message', function(data){
+        var list = document.getElementById('chat-messages');
+        if(!list) return;
+        var d = document.createElement('div');
+        d.className = 'chat-msg';
+        var n = document.createElement('span');
+        n.className = 'chat-name';
+        n.textContent = data.display_name || 'Player';
+        d.appendChild(n);
+        d.appendChild(document.createTextNode(data.message || ''));
+        list.appendChild(d);
+        list.scrollTop = list.scrollHeight;
+    });
+
+    // Chat send button / Enter key.
+    (function(){
+        var inp  = document.getElementById('chat-input');
+        var btn  = document.getElementById('chat-send');
+        var sock = window.Game && window.Game.socket;
+        function sendChat(){
+            if(!inp || !sock) return;
+            var msg = inp.value.trim();
+            if(!msg) return;
+            sock.emit('room_chat', {room_id: ps.room_id, message: msg});
+            inp.value = '';
+        }
+        if(btn) btn.addEventListener('click', sendChat);
+        if(inp) inp.addEventListener('keydown', function(e){
+            if(e.key === 'Enter') { e.preventDefault(); sendChat(); }
+        });
+    })();
+
+    // ── Cancel room button ────────────────────────────────────────────────
+    (function(){
+        var btn = document.getElementById('cancel-room-btn');
+        if(!btn) return;
+        btn.addEventListener('click', function(){
+            btn.disabled = true;
+            btn.textContent = 'Cancelling\u2026';
+            fetch('/api/rooms/' + ps.room_id + '/cancel', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+            }).then(function(r){ return r.json(); })
+              .then(function(d){ window.location.href = d.redirect || '/lobby'; })
+              .catch(function(){ window.location.href = '/lobby'; });
+        });
+    })();
+
+    // ── Waiting timer ─────────────────────────────────────────────────────
+    (function(){
+        var wsEl  = document.getElementById('waiting-screen');
+        var timerEl = document.getElementById('waiting-timer');
+        if(!timerEl || !wsEl) return;
+        var raw = wsEl.dataset.createdAt;
+        var origin = raw ? new Date(raw) : new Date();
+        setInterval(function(){
+            var sec = Math.floor((Date.now() - origin) / 1000);
+            var m = Math.floor(sec / 60), s = sec % 60;
+            timerEl.textContent = (m > 0 ? m + 'm ' : '') + s + 's';
+        }, 1000);
+    })();
+
+    // ── Opponent thinking hint ────────────────────────────────────────────
+    window.Game.on('bot_thinking', function(){
+        var st  = eng.getState();
+        var opp = (st && st.bot_name) ? st.bot_name : 'Opponent';
+        var hint = document.getElementById('selection-hint');
+        if(hint) hint.textContent = opp + ' is thinking\u2026';
+        var bSt = document.querySelector('.opp-zone .zone-status');
+        if(bSt) bSt.innerHTML = '<span class="badge thinking">Thinking\u2026</span>';
+    });
+
+    // ── Chkobba commentary ────────────────────────────────────────────────
+    window.Game.on('cards_captured', function(data){
+        if(data.is_chkobba && window.showCommentaryToast && window.toastsEnabled && window.toastsEnabled())
+            window.showCommentaryToast('Mabrouk! \uD83C\uDF89');
+    });
+
+    // ── Disconnection handling ────────────────────────────────────────────
+    var _discCountdownIv = null;
+    window.Game.on('player_disconnected', function(data){
+        var banner  = document.getElementById('disc-banner');
+        var msgEl   = document.getElementById('disc-msg');
+        var timerEl = document.getElementById('disc-timer');
+        var board   = document.querySelector('.board');
+        var oppDot  = document.getElementById('opp-conn-dot');
+        if(!banner) return;
+
+        // Pause the game: disable card interactions.
+        if(board)   board.classList.add('game-paused');
+        if(oppDot)  oppDot.className = 'conn-dot conn-dot-opp disconnected';
+
+        var name = data.display_name || 'Opponent';
+        if(msgEl) msgEl.textContent = name + ' disconnected \u2014 waiting to reconnect\u2026';
+        banner.classList.remove('hidden');
+
+        // Countdown from deadline_secs down to 0.
+        var secs = (data.deadline_secs || 30);
+        if(timerEl) timerEl.textContent = secs + 's';
+        clearInterval(_discCountdownIv);
+        _discCountdownIv = setInterval(function(){
+            secs--;
+            if(secs <= 0){ clearInterval(_discCountdownIv); secs = 0; }
+            if(timerEl) timerEl.textContent = secs + 's';
+        }, 1000);
+    });
+
+    window.Game.on('player_reconnected', function(data){
+        clearInterval(_discCountdownIv);
+        var banner  = document.getElementById('disc-banner');
+        var board   = document.querySelector('.board');
+        var oppDot  = document.getElementById('opp-conn-dot');
+        if(banner)  banner.classList.add('hidden');
+        if(board)   board.classList.remove('game-paused');
+        if(oppDot)  oppDot.className = 'conn-dot conn-dot-opp connected';
+        if(window.showCommentaryToast)
+            window.showCommentaryToast((data.display_name || 'Opponent') + ' reconnected \uD83D\uDC4B');
+    });
+
+
+    window.Game.on('player_replaced_with_bot', function(data){
+        clearInterval(_discCountdownIv);
+        var banner = document.getElementById('disc-banner');
+        var board  = document.querySelector('.board');
+        if(banner) banner.classList.add('hidden');
+        if(board)  board.classList.remove('game-paused');
+        if(window.showCommentaryToast)
+            window.showCommentaryToast((data.display_name || 'Opponent') + ' was replaced by bot');
+    });
+
+    window.Game.on('you_were_replaced', function(){
+        var overlay = document.getElementById('replaced-overlay');
+        if(overlay) overlay.classList.remove('hidden');
+        // Hide the rest of the game UI beneath.
+        var gbw = document.getElementById('game-board-wrap');
+        if(gbw) gbw.style.filter = 'blur(4px) brightness(.4)';
+    });
+
+    // ── Rematch ───────────────────────────────────────────────────────────
+    (function(){
+        var sock     = window.Game && window.Game.socket;
+        var roomId   = ps.room_id;
+        var statusEl = document.getElementById('rematch-status');
+        var rematchNewRoom = null;   // the freshly created rematch room_id
+
+        // Player clicks "Rematch?" — offer to opponent.
+        var offerBtn = document.getElementById('rematch-btn');
+        if(offerBtn && sock){
+            offerBtn.addEventListener('click', function(){
+                offerBtn.disabled = true;
+                offerBtn.textContent = 'Waiting for opponent\u2026';
+                if(statusEl){ statusEl.style.display=''; statusEl.textContent='Offer sent — waiting for response\u2026'; }
+                sock.emit('rematch_offer', {room_id: roomId});
+            });
+        }
+
+        // Server confirms we sent the offer (gives us the new room id).
+        window.Game.on('rematch_offered_sent', function(data){
+            rematchNewRoom = data.new_room_id;
+        });
+
+        // Incoming offer from opponent.
+        window.Game.on('rematch_offered', function(data){
+            rematchNewRoom = data.new_room_id;
+            var ov = document.getElementById('rematch-offer-overlay');
+            var nm = document.getElementById('rematch-from-name');
+            if(nm)  nm.textContent = (data.from_player || 'Opponent') + ' wants a rematch!';
+            if(ov){ ov.style.display = 'flex'; }
+
+            document.getElementById('rematch-accept-btn').onclick = function(){
+                sock.emit('rematch_response', {room_id: data.new_room_id, accepted: true});
+            };
+            document.getElementById('rematch-decline-btn').onclick = function(){
+                sock.emit('rematch_response', {room_id: data.new_room_id, accepted: false});
+                document.getElementById('rematch-offer-overlay').style.display = 'none';
+            };
+        });
+
+        // Both players accepted → redirect to the new room.
+        window.Game.on('rematch_accepted', function(data){
+            window.location.href = '/play/' + (data.room_id || rematchNewRoom);
+        });
+
+        // Opponent declined.
+        window.Game.on('rematch_declined', function(){
+            var offerBtn2 = document.getElementById('rematch-btn');
+            if(offerBtn2){ offerBtn2.disabled = false; offerBtn2.textContent = 'Rematch?'; }
+            if(statusEl){ statusEl.textContent = 'Opponent declined.'; }
+            var ov = document.getElementById('rematch-offer-overlay');
+            if(ov) ov.style.display = 'none';
+        });
+    })();
+
+    // ── Round / match over ────────────────────────────────────────────────
+    window.Game.on('round_over',  function(){ window.location.reload(); });
+    window.Game.on('match_over',  function(){ window.location.reload(); });
+
+    // ── Copy invite button ────────────────────────────────────────────────
+    var copyBtn = document.getElementById('copy-invite-btn');
+    var urlInput = document.getElementById('invite-url-input');
+    if(copyBtn && urlInput){
+        copyBtn.addEventListener('click', function(){
+            urlInput.select();
+            try{ document.execCommand('copy'); } catch(e){}
+            navigator.clipboard && navigator.clipboard.writeText(urlInput.value).catch(function(){});
+            copyBtn.textContent = '\u2713 Copied!';
+            setTimeout(function(){ copyBtn.textContent = '\uD83D\uDCCB Copy'; }, 2000);
+        });
+    }
+});
+</script>
+
+<!-- ════ Commentary toast ════ -->
+<div id="commentary-toast" role="status" aria-live="polite"></div>
+<script>
+(function(){
+    function showToast(msg){
+        var el=document.getElementById('commentary-toast');
+        if(!el||!msg) return;
+        el.textContent=msg; el.classList.add('visible');
+        setTimeout(function(){el.classList.remove('visible');},2200);
+    }
+    function toastsEnabled(){ return localStorage.getItem('chk_toasts')!=='off'; }
+    window.showCommentaryToast=showToast;
+    window.toastsEnabled=toastsEnabled;
+})();
+</script>
+
+</body>
+</html>

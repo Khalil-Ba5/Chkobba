@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>Lobby — Chkobba</title>
+    <link rel="icon" href="data:,">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@700;900&family=Inter:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ static_url('style.css') }}">
+    <meta name="csrf-token" content="{{ csrf_token() }}">
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js" crossorigin="anonymous"></script>
+</head>
+<body class="lobby-page">
+
+<!-- ════════════════ HUD ════════════════ -->
+<header class="hud">
+    <div class="hud-brand">Chkobba</div>
+    <div class="hud-scores"></div>
+    <nav class="hud-nav">
+        <span class="conn-dot" title="Connection status" aria-hidden="true"></span>
+        <a href="{{ url_for('index') }}"  class="hud-btn">Home</a>
+        <a href="{{ url_for('history') }}" class="hud-btn">History</a>
+    </nav>
+</header>
+
+<!-- ════════════════ LOBBY ════════════════ -->
+<main class="lobby-main">
+    <div class="lobby-header">
+        <h1 class="lobby-title">Public Lobby</h1>
+        <p class="lobby-sub">Join an open game or create your own</p>
+    </div>
+
+    <!-- Create a public room -->
+    <div class="lobby-actions">
+        <button id="create-public-btn" class="btn-lobby-create">
+            + Create Public Room
+        </button>
+        <div id="create-target-selector" class="lobby-target-selector" style="display:none">
+            <span class="lobby-target-label">Play to</span>
+            <label class="lobby-target-opt">
+                <input type="radio" name="lobby_target" value="11" checked> <span>11</span>
+            </label>
+            <label class="lobby-target-opt">
+                <input type="radio" name="lobby_target" value="21"> <span>21</span>
+            </label>
+            <label class="lobby-target-opt">
+                <input type="radio" name="lobby_target" value="31"> <span>31</span>
+            </label>
+            <button id="confirm-create-btn" class="btn-lobby-confirm">Create</button>
+        </div>
+    </div>
+
+    <!-- Open room list -->
+    <div class="lobby-rooms" id="lobby-rooms">
+        {% if open_rooms %}
+            {% for room in open_rooms %}
+            <div class="lobby-room-row" data-room-id="{{ room.room_id }}" id="room-{{ room.room_id }}">
+                <div class="lobby-room-player">
+                    <span class="avatar-dot" style="background:{{ room.creator_color }}">{{ room.creator_initial }}</span>
+                    <span class="lobby-room-name">{{ room.creator_name }}</span>
+                </div>
+                <div class="lobby-room-meta">
+                    <span class="lobby-room-mode">1v1</span>
+                    <span class="lobby-room-target">to {{ room.target_score }} pts</span>
+                </div>
+                <a href="{{ url_for('play_room', room_id=room.room_id) }}" class="btn-lobby-join">Join</a>
+            </div>
+            {% endfor %}
+        {% else %}
+            <div class="lobby-empty" id="lobby-empty">
+                <p>No open rooms yet.</p>
+                <p class="lobby-empty-sub">Be the first to create one!</p>
+            </div>
+        {% endif %}
+    </div>
+</main>
+
+<script>
+(function(){
+    var CSRF = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+
+    // ── SocketIO connection ─────────────────────────────────────────────
+    var socket = io({ transports: ['websocket', 'polling'] });
+    var dot    = document.querySelector('.conn-dot');
+
+    socket.on('connect', function(){
+        if(dot) dot.className = 'conn-dot connected';
+        socket.emit('join_lobby');
+    });
+    socket.on('disconnect', function(){
+        if(dot) dot.className = 'conn-dot disconnected';
+    });
+
+    // ── Real-time lobby updates ─────────────────────────────────────────
+    socket.on('lobby_update', function(data){
+        if(data.action === 'add'){
+            addRoom(data.room);
+        } else if(data.action === 'remove'){
+            removeRoom(data.room_id);
+        }
+    });
+
+    function addRoom(room){
+        var empty = document.getElementById('lobby-empty');
+        if(empty) empty.style.display = 'none';
+
+        var container = document.getElementById('lobby-rooms');
+        var existing  = document.getElementById('room-' + room.room_id);
+        if(existing) return; // already present
+
+        var row = document.createElement('div');
+        row.className  = 'lobby-room-row';
+        row.id         = 'room-' + room.room_id;
+        row.dataset.roomId = room.room_id;
+        row.innerHTML =
+            '<div class="lobby-room-player">'
+          +   '<span class="avatar-dot" style="background:' + (room.creator_color||'#888') + '">'
+          +     (room.creator_initial || '?')
+          +   '</span>'
+          +   '<span class="lobby-room-name">' + escHtml(room.creator_name || '?') + '</span>'
+          + '</div>'
+          + '<div class="lobby-room-meta">'
+          +   '<span class="lobby-room-mode">1v1</span>'
+          +   '<span class="lobby-room-target">to ' + (room.target_score || 11) + ' pts</span>'
+          + '</div>'
+          + '<a href="/play/' + room.room_id + '" class="btn-lobby-join">Join</a>';
+        container.insertBefore(row, container.firstChild);
+    }
+
+    function removeRoom(roomId){
+        var row = document.getElementById('room-' + roomId);
+        if(row){
+            row.classList.add('lobby-room-leaving');
+            setTimeout(function(){ if(row.parentNode) row.parentNode.removeChild(row); }, 350);
+        }
+        // Show empty state if no rows remain.
+        setTimeout(function(){
+            var rows = document.querySelectorAll('.lobby-room-row');
+            var empty = document.getElementById('lobby-empty');
+            if(!rows.length && empty){
+                empty.style.display = '';
+            }
+        }, 400);
+    }
+
+    function escHtml(s){
+        return String(s)
+            .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+            .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    // ── Create public room ──────────────────────────────────────────────
+    var createBtn    = document.getElementById('create-public-btn');
+    var targetSel    = document.getElementById('create-target-selector');
+    var confirmBtn   = document.getElementById('confirm-create-btn');
+
+    createBtn.addEventListener('click', function(){
+        targetSel.style.display = targetSel.style.display === 'none' ? '' : 'none';
+    });
+
+    confirmBtn.addEventListener('click', function(){
+        var radios = document.querySelectorAll('input[name="lobby_target"]');
+        var target = 11;
+        radios.forEach(function(r){ if(r.checked) target = parseInt(r.value, 10); });
+
+        confirmBtn.disabled = true;
+        confirmBtn.textContent = 'Creating…';
+
+        fetch('/api/rooms/public', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ _csrf_token: CSRF, target_score: target })
+        })
+        .then(function(r){ return r.json(); })
+        .then(function(d){
+            if(d.room_id){
+                window.location.href = '/play/' + d.room_id;
+            } else {
+                confirmBtn.disabled = false;
+                confirmBtn.textContent = 'Create';
+                alert(d.error || 'Failed to create room.');
+            }
+        })
+        .catch(function(){
+            confirmBtn.disabled = false;
+            confirmBtn.textContent = 'Create';
+        });
+    });
+})();
+</script>
+</body>
+</html>

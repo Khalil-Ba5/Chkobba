@@ -3,4 +3,15 @@ services:
     name: chkobba-app
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn --bind 0.0.0.0:$PORT ui.app:app
+    # -k eventlet  → eventlet worker class (required for Socket.IO WebSocket support)
+    # -w 1         → single worker; increase to ≥2 only after adding Redis REDIS_URL
+    startCommand: gunicorn -k eventlet -w 1 --bind 0.0.0.0:$PORT ui.app:app
+    envVars:
+      - key: SECRET_KEY
+        generateValue: true
+      # Add REDIS_URL here once you attach a Redis addon in the Render dashboard:
+      # - key: REDIS_URL
+      #   fromService:
+      #     type: redis
+      #     name: chkobba-redis
+      #     property: connectionString

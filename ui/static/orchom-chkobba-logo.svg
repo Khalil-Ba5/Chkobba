@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 220" fill="none">
+  <!-- Orchom Chkobba logo — transparent, scalable -->
+  <!-- Colors use currentColor so you can theme it via CSS color property -->
+  
+  <g fill="currentColor" stroke="currentColor">
+    
+    <!-- "orchom" italic on top -->
+    <text x="200" y="30" text-anchor="middle"
+          font-family="'Playfair Display', Georgia, serif"
+          font-size="20" font-style="italic" font-weight="400"
+          letter-spacing="3" stroke="none">orchom</text>
+    
+    <!-- Ornamental divider -->
+    <line x1="140" y1="48" x2="188" y2="48" stroke-width="0.5"/>
+    <line x1="212" y1="48" x2="260" y2="48" stroke-width="0.5"/>
+    <polygon points="200,45 196,48 200,51 204,48" stroke="none"/>
+    
+    <!-- CHKOBBA main wordmark -->
+    <text x="200" y="98" text-anchor="middle"
+          font-family="Georgia, serif"
+          font-size="44" font-weight="500"
+          letter-spacing="8" stroke="none">CHKOBBA</text>
+    
+    <!-- Decorative rule -->
+    <line x1="50" y1="120" x2="350" y2="120" stroke-width="0.5" opacity="0.5"/>
+    
+    <!-- Four classic suits -->
+    <g transform="translate(200, 160)" stroke="none">
+      
+      <!-- Heart -->
+      <g transform="translate(-120, 0)">
+        <path d="M 0,12 C -2,9 -14,2 -14,-6 C -14,-12 -10,-15 -6,-15 C -3,-15 -1,-13 0,-10 C 1,-13 3,-15 6,-15 C 10,-15 14,-12 14,-6 C 14,2 2,9 0,12 Z"/>
+      </g>
+      
+      <!-- Diamond -->
+      <g transform="translate(-40, 0)">
+        <polygon points="0,-15 11,0 0,15 -11,0"/>
+      </g>
+      
+      <!-- Spade -->
+      <g transform="translate(40, 0)">
+        <path d="M 0,-15 C -2,-12 -14,-4 -14,4 C -14,9 -10,12 -6,12 C -3,12 -1,11 0,9 C -1,12 -2,15 -5,16 L 5,16 C 2,15 1,12 0,9 C 1,11 3,12 6,12 C 10,12 14,9 14,4 C 14,-4 2,-12 0,-15 Z"/>
+      </g>
+      
+      <!-- Club -->
+      <g transform="translate(120, 0)">
+        <circle cx="0" cy="-8" r="5.5"/>
+        <circle cx="-6" cy="2" r="5.5"/>
+        <circle cx="6" cy="2" r="5.5"/>
+        <path d="M -3,5 L 3,5 L 5,16 L -5,16 Z"/>
+      </g>
+      
+      <!-- Connecting lines between suits -->
+      <line x1="-100" y1="0" x2="-60" y2="0" stroke="currentColor" stroke-width="0.4" opacity="0.5"/>
+      <line x1="-20" y1="0" x2="20" y2="0" stroke="currentColor" stroke-width="0.4" opacity="0.5"/>
+      <line x1="60" y1="0" x2="100" y2="0" stroke="currentColor" stroke-width="0.4" opacity="0.5"/>
+      
+    </g>
+    
+  </g>
+</svg>

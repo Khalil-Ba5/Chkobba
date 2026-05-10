@@ -1,5 +1,19 @@
 from __future__ import annotations
 
+# ---------------------------------------------------------------------------
+# Async runtime — must be patched before any other stdlib imports so that
+# eventlet's cooperative I/O replaces blocking sockets everywhere.
+# Falls back gracefully to threading mode (e.g. when eventlet is not yet
+# installed in the venv, which is common on a fresh checkout before
+# `pip install -r requirements.txt`).
+# ---------------------------------------------------------------------------
+try:
+    import eventlet
+    eventlet.monkey_patch()
+    _ASYNC_MODE = "eventlet"
+except ImportError:
+    _ASYNC_MODE = "threading"
+
 import os
 import sys
 import logging
@@ -14,9 +28,10 @@ from time import time
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from flask import Flask, render_template, redirect, url_for, flash, request, session
+from flask import Flask, render_template, redirect, url_for, flash, request, session, jsonify
+from flask_socketio import SocketIO
 
-from engine.game_state import GameState, Move, Card, Suit, Rank, PlayerState, create_initial_state
+from engine.game_state import GameState, Move, Card, Suit, Rank, PlayerState, create_initial_state, tunisian_barmila_points
 from engine.heuristic_bot import get_heuristic_move
 from engine.utils import card_to_str
 from engine.persistence import (
@@ -24,17 +39,30 @@ from engine.persistence import (
     init_database,
     get_match_history,
     get_statistics,
-    save_session,
-    load_session,
-    clear_session,
 )
+
+from services.game_store import GameStore, get_game_store
+from services.names import generate_display_name, avatar_color, is_clean
+from services.matchmaking import MatchmakingQueue, get_matchmaking_queue
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Initialize database
+# Initialize solo-game database tables (engine layer)
 init_database()
+# Initialize multiplayer tables (models layer)
+from models.db import init_models as _init_models
+from models.guests import ensure_guest as _ensure_guest, get_guest as _get_guest, update_display_name as _update_display_name
+_init_models()
+
+
+# ---------------------------------------------------------------------------
+# Exceptions
+# ---------------------------------------------------------------------------
+
+class RoomNotFoundError(Exception):
+    """Raised by GameManager.load() when the room_id is absent from the store."""
 
 
 # ---------------------------------------------------------------------------
@@ -71,6 +99,28 @@ def _move_to_indices(state: GameState, move: Move, human_id: int) -> tuple[int, 
 
     return hand_index, table_indices
 
+# ---------------------------------------------------------------------------
+# Bot personality config
+# ---------------------------------------------------------------------------
+# Change BOT_DEFAULT_NAME to customise; add more names to BOT_NAMES for future use.
+BOT_NAMES = [
+    "Si Ahmed",
+    "Khalti Aïcha",
+    "Houcine el-Kahwagi",
+    "Brahim",
+    "Youssef",
+]
+BOT_DEFAULT_NAME: str = BOT_NAMES[0]  # change index to pick a different persona
+
+# Commentary lines shown as toasts on notable game events (Tunisian dialect).
+_COMMENTARY: dict[str, str] = {
+    "human_chkobba":    "Mabrouk! 🎉",
+    "bot_chkobba":      "Aâlach hakka? 🤔",
+    "player_wins_round": "Yezzi! 💪",
+    "bot_wins_round":   "Aâlach hakka? 🤔",
+    "close_call":       "Chouf chouf 👀",
+}
+
 app = Flask(
     __name__,
     template_folder=str(Path(__file__).parent / "templates"),
@@ -85,19 +135,72 @@ app.config["DEBUG_MODE"] = False
 # Render sets RENDER=true; used to disable debug toggles and unsafe defaults in production.
 IS_PRODUCTION = os.environ.get("RENDER", "").lower() == "true"
 
+# ---------------------------------------------------------------------------
+# Real-time layer (Flask-SocketIO + optional Redis message broker)
+# ---------------------------------------------------------------------------
+# REDIS_URL is optional for local dev (single worker) but required in
+# production when running multiple gunicorn workers so they can all share
+# room state via a pub/sub message queue.
+# Set it in the Render dashboard → Environment → REDIS_URL=redis://<host>:6379
+# ---------------------------------------------------------------------------
+REDIS_URL: str | None = os.environ.get("REDIS_URL", None)
+
+socketio = SocketIO(
+    app,
+    async_mode=_ASYNC_MODE,
+    message_queue=REDIS_URL,   # None → in-process only (fine for 1 worker)
+    cors_allowed_origins="*",
+    logger=False,
+    engineio_logger=False,
+)
+
+# Game-state store — must be created after app so _get_manager() can reference
+# app.game_store.  The factory reads REDIS_URL; logs which backend is active.
+app.game_store = get_game_store()
+app.matchmaking_queue = get_matchmaking_queue()
+
 TARGET_SCORES = [11, 21, 31]
+MP_TARGET_SCORES = [11, 21, 31]   # available target scores for multiplayer rooms
 
 # ---------------------------------------------------------------------------
 # Deployment note (Gunicorn / multi-worker / horizontal scale)
 # ---------------------------------------------------------------------------
-# Game state lives in process memory: MANAGERS (per Flask session cookie key).
-# - With multiple Gunicorn workers, each worker has its own MANAGERS dict; a user
-#   can hit different workers and see inconsistent or reset games unless you use
-#   sticky sessions or a single worker.
-# - SQLite + saved sessions use the instance filesystem; on Render free tier the
-#   disk is ephemeral — treat history/resume as best-effort unless you add a DB addon.
-# Future improvement: external store (Redis/Postgres) keyed by session or game_id.
+# Game state is now stored in app.game_store (MemoryGameStore or RedisGameStore),
+# keyed by solo_room_id stored in each browser's session cookie.
+# - MemoryGameStore: in-process dict, safe for single-worker dev.
+# - RedisGameStore: safe for multiple Gunicorn workers; set REDIS_URL env var.
+# - With -w 1 and no REDIS_URL, MemoryGameStore is used (zero extra deps).
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Guest-session middleware
+# ---------------------------------------------------------------------------
+
+@app.before_request
+def _ensure_guest_session() -> None:
+    """Give every browser a persistent guest identity (UUID in session cookie).
+
+    This runs before every HTTP request (static files are excluded by Flask).
+    The guest row is created in SQLite only once; subsequent requests are
+    handled by the INSERT OR IGNORE inside ensure_guest().
+
+    Later, when the user registers an account, the account row is linked back
+    to this guest_id so match history is preserved.
+    """
+    if "guest_id" not in session:
+        guest_id = secrets.token_hex(16)
+        session["guest_id"] = guest_id
+        name = generate_display_name()
+        _ensure_guest(guest_id, display_name=name)
+        session["display_name"] = name
+    elif "display_name" not in session:
+        # Returning visitor whose session predates the name feature — load from DB.
+        guest = _get_guest(session["guest_id"])
+        session["display_name"] = (
+            guest["display_name"] if guest and guest["display_name"] != "Guest"
+            else generate_display_name()
+        )
 
 
 def csrf_protect(f):
@@ -123,6 +226,24 @@ def generate_csrf_token():
 
 
 app.jinja_env.globals['csrf_token'] = generate_csrf_token
+app.jinja_env.filters['avatar_color_filter'] = avatar_color
+
+
+def _static_url(filename: str) -> str:
+    """Return a versioned URL for a static file using its mtime as cache-buster.
+
+    If the file doesn't exist (e.g. in test), falls back to the plain URL.
+    """
+    from flask import url_for as _url_for
+    fpath = Path(__file__).parent / "static" / filename
+    try:
+        v = int(fpath.stat().st_mtime)
+    except OSError:
+        return _url_for("static", filename=filename)
+    return _url_for("static", filename=filename, v=v)
+
+
+app.jinja_env.globals["static_url"] = _static_url
 
 
 def describe_move(move: Move) -> str:
@@ -165,9 +286,12 @@ class GameManager:
     Uses explicit GamePhase enum instead of multiple boolean flags for clearer state management.
     """
 
-    def __init__(self, session_key: str | None = None) -> None:
-        # Per-browser keys come from _client_session_key(); None is only for legacy/smoke tests.
-        self.session_key = session_key or "__legacy__"
+    def __init__(self, room_id: str = "__no_room__", store: GameStore | None = None) -> None:
+        # room_id  — unique per browser session (solo) or per match (multiplayer).
+        # store    — GameStore instance (MemoryGameStore or RedisGameStore).
+        self.room_id = room_id
+        self.session_key = room_id   # legacy alias used internally; do not remove
+        self._store: GameStore | None = store
         # Game state
         self.state: GameState | None = None
         self.phase: GamePhase = GamePhase.MENU
@@ -185,6 +309,7 @@ class GameManager:
         self.pending_bot_captured_indices: list[int] = []
         self.pending_bot_played_card: str | None = None
         self.pending_bot_is_capture: bool = False
+        self.pending_bot_is_chkobba: bool = False
         
         # Move tracking for animations
         self.last_human_played_table_index: int | None = None
@@ -196,12 +321,23 @@ class GameManager:
         # UI table slots (preserve empty positions after captures)
         self.table_slots: list[Card | None] = []
         
-        # Player IDs
+        # Player IDs — may be flipped by replace_with_bot() for seat-1-replaced games
         self.human_id: int = 0
         self.bot_id: int = 1
+
+        # Set to the seat index that was replaced by the bot engine in a 1v1 game
+        # (None means this is a normal solo or live-1v1 game)
+        self.bot_replacement_seat: int | None = None
+
+        # Game mode: "solo" (human vs bot) | "1v1" (human vs human)
+        self.mode: str = "solo"
         
         # UI messaging
         self.messages: list[str] = []
+        # Commentary toast to show on next page render (consumed once)
+        self.pending_commentary: str | None = None
+        # Per-round score breakdown for the notebook scorecard
+        self.round_breakdown: list[dict] = []
         self.restart(clear_saved=False)
 
     def restart(self, clear_saved: bool = True) -> None:
@@ -219,8 +355,9 @@ class GameManager:
         self._clear_move_state()
         self.messages = []
         self.table_slots = []
-        if clear_saved:
-            clear_session(self.session_key)
+        self.pending_commentary = None
+        if clear_saved and self._store is not None:
+            self._store.delete(self.room_id)
         
     def _clear_move_state(self) -> None:
         """Clear all move and animation tracking state."""
@@ -228,13 +365,14 @@ class GameManager:
         self.pending_bot_captured_indices = []
         self.pending_bot_played_card = None
         self.pending_bot_is_capture = False
+        self.pending_bot_is_chkobba = False
         self.last_human_played_table_index = None
         self.last_played_card = None
         self.last_played_by = None
         self.last_human_move = None
         self.last_bot_move = None
 
-    def start_game(self, target_score: int) -> None:
+    def start_game(self, target_score: int, starting_seat: int = 0) -> None:
         """Initialize a new match with the given target score."""
         self.target_score = target_score
         self.match_scores = [0, 0]
@@ -243,8 +381,10 @@ class GameManager:
         self.match_start_time = time()
         self.round_history = []
         self._clear_move_state()
-        
+
         self.state = create_initial_state()
+        if starting_seat != 0:
+            self.state.current_player = starting_seat
         self.table_slots = self.state.table_cards.copy()
         self.phase = GamePhase.PLAYING_HUMAN
         logger.info("Started new game with target score %d", target_score)
@@ -253,7 +393,7 @@ class GameManager:
         self.last_bot_move = None
         self.round_over = False
         self.final_points = None
-        self._save_session_state()
+        self.save()
 
     def next_round(self) -> None:
         """Start a new round within the same match."""
@@ -273,14 +413,43 @@ class GameManager:
         self.table_slots = self.state.table_cards.copy()
         self.phase = GamePhase.PLAYING_HUMAN
         self.messages.append("New round started!")
-        self._save_session_state()
+        self.save()
 
-    def _save_session_state(self) -> None:
-        """Persist current in-progress game session."""
-        if self.state is None or self.target_score is None:
-            clear_session(self.session_key)
-            return
-        save_session(self.session_key, {
+    # ------------------------------------------------------------------
+    # Persistence helpers (Phase 2 — store-backed)
+    # ------------------------------------------------------------------
+
+    def _phase_to_status(self) -> str:
+        if self.phase == GamePhase.MATCH_OVER:
+            return "match_over"
+        if self.phase == GamePhase.ROUND_OVER:
+            return "round_over"
+        if self.phase == GamePhase.MENU:
+            return "waiting"
+        return "active"
+
+    def _build_game_data(self) -> dict:
+        """Serialise the in-progress game to a plain dict (inner 'game' key)."""
+        state_dict = None
+        if self.state is not None:
+            state_dict = {
+                "players": [
+                    {
+                        "player_id": p.player_id,
+                        "hand": [card_to_data(c) for c in p.hand],
+                        "captured_cards": [card_to_data(c) for c in p.captured_cards],
+                        "chkobbas": p.chkobbas,
+                    }
+                    for p in self.state.players
+                ],
+                "table_cards": [card_to_data(c) for c in self.state.table_cards],
+                "deck": [card_to_data(c) for c in self.state.deck],
+                "current_player": self.state.current_player,
+                "last_capturer": self.state.last_capturer,
+                "move_history": [move_to_data(m) for m in self.state.move_history],
+                "match_scores": self.state.match_scores,
+            }
+        return {
             "phase": self.phase.value,
             "match_scores": self.match_scores,
             "target_score": self.target_score,
@@ -299,33 +468,102 @@ class GameManager:
             "pending_bot_played_card": self.pending_bot_played_card,
             "pending_bot_is_capture": self.pending_bot_is_capture,
             "table_slots": [card_to_data(c) if c is not None else None for c in self.table_slots],
-            "state": {
-                "players": [
-                    {
-                        "player_id": p.player_id,
-                        "hand": [card_to_data(c) for c in p.hand],
-                        "captured_cards": [card_to_data(c) for c in p.captured_cards],
-                        "chkobbas": p.chkobbas,
-                    }
-                    for p in self.state.players
-                ],
-                "table_cards": [card_to_data(c) for c in self.state.table_cards],
-                "deck": [card_to_data(c) for c in self.state.deck],
-                "current_player": self.state.current_player,
-                "last_capturer": self.state.last_capturer,
-                "move_history": [move_to_data(m) for m in self.state.move_history],
-                "match_scores": self.state.match_scores,
-            },
-        })
+            "pending_bot_is_chkobba": self.pending_bot_is_chkobba,
+            "round_breakdown": self.round_breakdown,
+            "mode": self.mode,
+            "human_id": self.human_id,
+            "bot_id": self.bot_id,
+            "bot_replacement_seat": self.bot_replacement_seat,
+            "state": state_dict,
+        }
 
-    def resume_saved_session(self) -> bool:
-        """Load persisted in-progress session into memory."""
-        data = load_session(self.session_key)
-        if not data:
-            return False
+    def save(self, ttl_seconds: int = 86400) -> None:
+        """Persist current game state to the store.
+
+        No-op if this is a transient MENU manager with no store / room.
+        """
+        if self._store is None or self.room_id == "__no_room__":
+            return
+        if self.state is None and self.target_score is None:
+            # Nothing meaningful to persist.
+            return
+
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+
+        # Preserve created_at from the existing blob if it exists.
+        existing = self._store.get(self.room_id)
+        created_at = existing.get("created_at", now) if existing else now
+
+        # Resolve guest_id safely — save() may be called from a background task
+        # (no Flask request context), e.g. from _run_bot_turn in sockets.py.
+        try:
+            guest_id = session.get("guest_id", "unknown")
+        except RuntimeError:
+            # Outside request context: preserve from the existing blob if available.
+            guest_id = (existing or {}).get("players", [{}])[0].get("guest_id", "unknown")
+
+        existing_players = (existing or {}).get("players", [])
+        if self.mode == "solo" and self.bot_replacement_seat is None and not existing_players:
+            # Brand-new solo game with no pre-existing player array.
+            players_blob = [
+                {
+                    "guest_id": guest_id,
+                    "display_name": "You",
+                    "seat": 0,
+                    "is_bot": False,
+                    "connected": True,
+                    "sid": None,
+                },
+                {
+                    "guest_id": "bot",
+                    "display_name": BOT_DEFAULT_NAME,
+                    "seat": 1,
+                    "is_bot": True,
+                    "connected": True,
+                    "sid": None,
+                },
+            ]
+        else:
+            # 1v1, replaced-bot, or solo with an existing array — preserve it.
+            players_blob = existing_players
+
+        # Preserve lobby-specific metadata for multiplayer rooms.
+        visibility        = (existing or {}).get("visibility", "private")
+        created_by        = (existing or {}).get("created_by", guest_id)
+        target_score_blob = (existing or {}).get("target_score_mp", self.target_score)
+
+        blob = {
+            "room_id": self.room_id,
+            "mode": self.mode,
+            "visibility": visibility,
+            "created_by": created_by,
+            "target_score_mp": target_score_blob,
+            "status": self._phase_to_status(),
+            "created_at": created_at,
+            "last_action_at": now,
+            "players": players_blob,
+            "game": self._build_game_data(),
+        }
+
+        # Expose bot_replacement_seat at the top level so on_game_join can detect
+        # late reconnects without loading the full manager.
+        if self.bot_replacement_seat is not None:
+            blob["bot_replacement_seat"] = self.bot_replacement_seat
+
+        # Preserve extra blob fields that game logic doesn't manage directly.
+        for _key in ("chat", "disconnect"):
+            _val = (existing or {}).get(_key)
+            if _val is not None:
+                blob[_key] = _val
+
+        self._store.set(self.room_id, blob, ttl_seconds)
+
+    def _restore_from_game_data(self, data: dict) -> None:
+        """Overwrite this manager's state from a serialised 'game' dict."""
         state_data = data.get("state")
         if not state_data:
-            return False
+            return
         players = [
             PlayerState(
                 player_id=p["player_id"],
@@ -361,10 +599,163 @@ class GameManager:
         self.pending_bot_captured_indices = data.get("pending_bot_captured_indices", [])
         self.pending_bot_played_card = data.get("pending_bot_played_card")
         self.pending_bot_is_capture = data.get("pending_bot_is_capture", False)
+        self.pending_bot_is_chkobba = data.get("pending_bot_is_chkobba", False)
+        self.round_breakdown = data.get("round_breakdown", [])
+        self.mode = data.get("mode", "solo")
+        self.human_id = data.get("human_id", 0)
+        self.bot_id = data.get("bot_id", 1)
+        self.bot_replacement_seat = data.get("bot_replacement_seat", None)
         self.table_slots = [card_from_data(c) if c is not None else None for c in data.get("table_slots", [])]
-        if not self.table_slots:
+        if not self.table_slots and self.state is not None:
             self.table_slots = self.state.table_cards.copy()
-        return True
+
+    @classmethod
+    def load(cls, room_id: str, store: GameStore) -> "GameManager":
+        """Load a game from the store.
+
+        Raises RoomNotFoundError if room_id is not in the store.
+        """
+        blob = store.get(room_id)
+        if blob is None:
+            raise RoomNotFoundError(f"Room {room_id!r} not found in store")
+        manager = cls(room_id=room_id, store=store)
+        manager._restore_from_game_data(blob.get("game", {}))
+        return manager
+
+    @classmethod
+    def create(cls, room_id: str, target_score: int, store: GameStore) -> "GameManager":
+        """Create a fresh single-player game, persist it, return the manager."""
+        manager = cls(room_id=room_id, store=store)
+        manager.start_game(target_score)   # start_game() calls save() at the end
+        return manager
+
+    @classmethod
+    def create_mp(
+        cls,
+        room_id: str,
+        target_score: int,
+        store: "GameStore",
+        starting_seat: int = 0,
+    ) -> "GameManager":
+        """Create a fresh 1v1 multiplayer game.
+
+        The room blob's players array must already be populated by the lobby
+        system before this is called; save() will preserve it.
+        ``starting_seat`` controls which player (0 or 1) acts first.
+        """
+        manager = cls(room_id=room_id, store=store)
+        manager.mode = "1v1"
+        manager.start_game(target_score, starting_seat=starting_seat)
+        return manager
+
+    def replace_with_bot(self, disconnected_seat: int) -> None:
+        """Replace a disconnected player's seat with the bot AI.
+
+        Converts the game from 1v1 to solo-style execution so the remaining
+        human continues against the engine.  Called by the 30-second
+        disconnection timeout task in sockets.py.
+        """
+        self.bot_replacement_seat = disconnected_seat
+        self.mode = "solo"
+        self.bot_id = disconnected_seat
+        self.human_id = 1 - disconnected_seat
+
+        # If it is currently the replaced player's turn, prime the pending bot
+        # move so _run_bot_turn() can execute it immediately.
+        if (
+            self.state is not None
+            and self.state.current_player == disconnected_seat
+            and not self.state.is_round_over
+        ):
+            self.phase = GamePhase.BOT_MOVING
+            self._queue_bot_move()
+
+        logger.info(
+            "Seat %d replaced with bot  room=%.8s  remaining_human=%d",
+            disconnected_seat, self.room_id, self.human_id,
+        )
+        self.save()
+
+    # ------------------------------------------------------------------
+    # Legacy shim — kept so existing call-sites that check for a saved
+    # session still compile; always returns False under the new store
+    # architecture (the game is auto-loaded by _get_manager()).
+    # ------------------------------------------------------------------
+    def resume_saved_session(self) -> bool:
+        return False
+
+    # ------------------------------------------------------------------
+    # Personality helpers
+    # ------------------------------------------------------------------
+
+    def _get_bot_mood(self) -> str:
+        """Return an emoji representing the bot's current mood."""
+        if self.last_human_move and "chkobba" in (self.last_human_move or "").lower():
+            return "😲"  # surprised: player just swept
+        if self.pending_bot_move is not None:
+            return "🎯"  # focused on playing
+        if self.phase == GamePhase.BOT_MOVING or (
+            self.state is not None and self.state.current_player == self.bot_id
+        ):
+            return "🤔"  # thinking
+        if self.state is not None:
+            bot_caps  = len(self.state.players[self.bot_id].captured_cards)
+            hum_caps  = len(self.state.players[self.human_id].captured_cards)
+            if bot_caps > hum_caps + 4:
+                return "😏"  # smug
+        return "😐"  # default focused
+
+    def _queue_commentary(self, event: str) -> None:
+        """Stage a commentary toast for the next page render."""
+        msg = _COMMENTARY.get(event)
+        if msg:
+            self.pending_commentary = msg
+
+    def _consume_commentary(self) -> str | None:
+        """Return and clear the pending commentary (so it shows only once)."""
+        msg = self.pending_commentary
+        self.pending_commentary = None
+        return msg
+
+    def _compute_round_breakdown(self) -> list[dict]:
+        """Build the per-category scoring rows for the notebook scorecard."""
+        if self.state is None:
+            return []
+        p0 = self.state.players[self.human_id]  # You
+        p1 = self.state.players[self.bot_id]    # Bot
+        rows: list[dict] = []
+
+        c0, c1 = len(p0.captured_cards), len(p1.captured_cards)
+        rows.append({
+            "label": f"Most cards  ({c0} vs {c1})",
+            "you": 1 if c0 > c1 else 0,
+            "bot": 1 if c1 > c0 else 0,
+        })
+
+        den0 = sum(1 for c in p0.captured_cards if c.suit == Suit.DENARI)
+        den1 = sum(1 for c in p1.captured_cards if c.suit == Suit.DENARI)
+        rows.append({
+            "label": f"Denari ♦  ({den0} vs {den1})",
+            "you": 1 if den0 > den1 else 0,
+            "bot": 1 if den1 > den0 else 0,
+        })
+
+        seven_d = Card(Suit.DENARI, Rank.SEVEN)
+        rows.append({
+            "label": "7♦  Seba' Denari",
+            "you": 1 if seven_d in p0.captured_cards else 0,
+            "bot": 1 if seven_d in p1.captured_cards else 0,
+        })
+
+        b0, b1 = tunisian_barmila_points(p0.captured_cards, p1.captured_cards)
+        rows.append({"label": "Barmila", "you": b0, "bot": b1})
+
+        rows.append({
+            "label": "Chkobba ✦",
+            "you": p0.chkobbas,
+            "bot": p1.chkobbas,
+        })
+        return rows
 
     def _remove_card_from_slots(self, card: Card) -> None:
         """Mark the first matching slot as empty."""
@@ -373,35 +764,62 @@ class GameManager:
                 self.table_slots[i] = None
                 return
 
-    def _place_card_in_slots(self, card: Card) -> int:
-        """Place card in first empty slot, or append if none. Returns slot index."""
+    def _place_card_in_slots(self, card: Card, played_by: str = 'deal') -> int:
+        """Place card in a slot that matches the player's side.
+
+        played_by='human' → prefers odd indices  (bottom row, player's side)
+        played_by='bot'   → prefers even indices (top row,    bot's side)
+        played_by='deal'  → fills first empty slot or appends (original behaviour)
+        Returns the slot index used.
+        """
+        if played_by == 'deal':
+            for i, slot in enumerate(self.table_slots):
+                if slot is None:
+                    self.table_slots[i] = card
+                    return i
+            self.table_slots.append(card)
+            return len(self.table_slots) - 1
+
+        preferred_parity = 1 if played_by == 'human' else 0  # human→odd, bot→even
+
+        # Reuse an existing empty slot that has the right row parity first
         for i, slot in enumerate(self.table_slots):
-            if slot is None:
+            if slot is None and i % 2 == preferred_parity:
                 self.table_slots[i] = card
                 return i
+
+        # No matching empty slot — append, inserting a None placeholder if needed
+        # so that the new card lands on the correct parity index.
+        if len(self.table_slots) % 2 != preferred_parity:
+            self.table_slots.append(None)  # placeholder keeps the 2-row grid aligned
         self.table_slots.append(card)
         return len(self.table_slots) - 1
 
-    def _sync_table_slots_after_move(self, move: Move) -> None:
+    def _sync_table_slots_after_move(self, move: Move, played_by: str = 'deal') -> None:
         """Update UI slots to preserve table positions across captures."""
         if move.is_capture:
             for captured in move.captured_cards:
                 self._remove_card_from_slots(captured)
         else:
-            self._place_card_in_slots(move.played_card)
+            self._place_card_in_slots(move.played_card, played_by)
 
         # Safety: if slot cards don't match real table cards, rebuild compactly.
         slot_cards = [c for c in self.table_slots if c is not None]
         if self.state is not None and sorted(slot_cards, key=str) != sorted(self.state.table_cards, key=str):
             self.table_slots = self.state.table_cards.copy()
 
-    def _is_human_turn(self) -> bool:
-        """Check if it's the human player's turn to move."""
+    def _is_human_turn(self, seat: int | None = None) -> bool:
+        """Check if it's the specified seat's turn to move.
+
+        If *seat* is None, defaults to ``self.human_id`` (solo-mode behaviour).
+        For multiplayer, pass the viewer's seat.
+        """
+        check_seat = self.human_id if seat is None else seat
         return (
             self.phase == GamePhase.PLAYING_HUMAN
             and self.state is not None
             and self.pending_bot_move is None
-            and self.state.current_player == self.human_id
+            and self.state.current_player == check_seat
         )
 
     def _apply_human_move(self, move_index: int) -> None:
@@ -433,13 +851,17 @@ class GameManager:
                    describe_move(move), move_index, len(legal))
         self._execute_human_move(move)
 
-    def _apply_selected_move(self, hand_index: int, table_indices: list[int]) -> bool:
-        """
-        Apply a move built from user-selected cards.
-        Validates against state.legal_moves() before applying.
+    def _apply_selected_move(
+        self, hand_index: int, table_indices: list[int], seat: int | None = None
+    ) -> bool:
+        """Apply a move built from user-selected cards.
+
+        *seat* identifies the acting player (0 or 1).  Defaults to
+        ``self.human_id`` for backward-compat with solo mode.
         Returns True if move was applied, False if invalid.
-        Includes detailed validation logging.
         """
+        acting_seat = self.human_id if seat is None else seat
+
         if self.phase not in (GamePhase.PLAYING_HUMAN, GamePhase.BOT_MOVING):
             logger.warning("Attempted selected move during phase: %s", self.phase)
             flash("Game is over.")
@@ -450,20 +872,20 @@ class GameManager:
             flash("Game is over.")
             return False
             
-        if not self._is_human_turn():
-            logger.warning("Selected move attempt on non-human turn")
+        if not self._is_human_turn(acting_seat):
+            logger.warning("Selected move attempt on non-human turn (seat=%s)", acting_seat)
             flash("Not your turn!")
             return False
 
-        human = self.state.players[self.human_id]
+        player = self.state.players[acting_seat]
 
         # Validate hand index
-        if not (0 <= hand_index < len(human.hand)):
-            logger.warning("Invalid hand index %d (hand size: %d)", hand_index, len(human.hand))
+        if not (0 <= hand_index < len(player.hand)):
+            logger.warning("Invalid hand index %d (hand size: %d)", hand_index, len(player.hand))
             flash("Invalid hand card selected.")
             return False
 
-        played_card = human.hand[hand_index]
+        played_card = player.hand[hand_index]
 
         # Validate table indices
         invalid_table_idx = [i for i in table_indices if i < 0 or i >= len(self.state.table_cards)]
@@ -490,44 +912,61 @@ class GameManager:
                 break
 
         if matching is None:
-            logger.warning("Selected move not in legal moves. Played: %s, Captured: %s (legal moves: %d)",
-                          card_to_str(played_card), 
-                          [card_to_str(c) for c in captured_cards],
-                          len(legal))
+            logger.warning(
+                "Selected move not in legal moves. Played: %s, Captured: %s (legal moves: %d)",
+                card_to_str(played_card),
+                [card_to_str(c) for c in captured_cards],
+                len(legal),
+            )
             flash("Illegal move. Please select a valid capture.")
             return False
 
         logger.info("Human player executing selected move: %s", describe_move(matching))
-        # Apply the actual legal move (preserves tuple ordering)
-        self._execute_human_move(matching)
+        self._execute_human_move(matching, seat=acting_seat)
         return True
 
-    def _execute_human_move(self, move: Move) -> None:
-        """Execute a validated human move and queue bot move for animation."""
-        self.last_human_move = describe_move(move)
-        self.state.apply_move(move)
-        self._sync_table_slots_after_move(move)
-        self.messages.append(f"You {self.last_human_move}.")
+    def _execute_human_move(self, move: Move, seat: int | None = None) -> None:
+        """Execute a validated human move.
 
-        # Track human-played table card for animation
+        For solo mode: queues a bot move afterwards.
+        For 1v1 mode: simply switches turn (no bot).
+        *seat* defaults to ``self.human_id`` for backward-compat.
+        """
+        acting_seat = self.human_id if seat is None else seat
+        # Slot placement: seat 0 → 'human' (bottom row), seat 1 → 'bot' (top row).
+        slot_side = 'human' if acting_seat == 0 else 'bot'
+
+        self.last_human_move = describe_move(move)
+        before_chk = self.state.players[acting_seat].chkobbas
+        self.state.apply_move(move)
+        if self.state.players[acting_seat].chkobbas > before_chk:
+            self._queue_commentary("human_chkobba")
+        self._sync_table_slots_after_move(move, slot_side)
+        self.messages.append(f"Seat {acting_seat} {self.last_human_move}.")
+
+        # Track played table card for animation
         if not move.is_capture:
             self.last_played_card = card_to_str(move.played_card)
-            self.last_played_by = "human"
+            self.last_played_by = slot_side
             self.last_human_played_table_index = None
             for i, slot in enumerate(self.table_slots):
                 if slot == move.played_card:
                     self.last_human_played_table_index = i
                     break
 
-        # Check if round ended after human move
+        # Check if round ended
         if self.state.is_round_over:
             self._finish_round()
             return
 
-        # Queue bot move for animation (do not apply yet)
-        self.phase = GamePhase.BOT_MOVING
-        self._queue_bot_move()
-        self._save_session_state()
+        if self.mode == "solo":
+            # Solo: queue the bot move for animation.
+            self.phase = GamePhase.BOT_MOVING
+            self._queue_bot_move()
+        else:
+            # 1v1: both players are human — just keep PLAYING_HUMAN.
+            self.phase = GamePhase.PLAYING_HUMAN
+        self.save()
 
     def _queue_bot_move(self) -> None:
         """Compute bot move and store it for animation phase."""
@@ -545,6 +984,9 @@ class GameManager:
         self.last_bot_move = describe_move(move)
         self.pending_bot_played_card = card_to_str(move.played_card)
         self.pending_bot_is_capture = move.is_capture
+        self.pending_bot_is_chkobba = (
+            move.is_capture and len(move.captured_cards) == len(self.state.table_cards)
+        )
 
         # Compute table indices that will be captured
         self.pending_bot_captured_indices = []
@@ -564,8 +1006,11 @@ class GameManager:
         if not self.pending_bot_move.is_capture:
             self.last_played_card = card_to_str(self.pending_bot_move.played_card)
             self.last_played_by = "bot"
+        before_chk = self.state.players[self.bot_id].chkobbas
         self.state.apply_move(self.pending_bot_move)
-        self._sync_table_slots_after_move(self.pending_bot_move)
+        if self.state.players[self.bot_id].chkobbas > before_chk:
+            self._queue_commentary("bot_chkobba")
+        self._sync_table_slots_after_move(self.pending_bot_move, 'bot')
         self.messages.append(f"Bot {self.last_bot_move}.")
         self.pending_bot_move = None
         self.pending_bot_captured_indices = []
@@ -578,14 +1023,24 @@ class GameManager:
         else:
             # Bot move is done; hand control back to the human player.
             self.phase = GamePhase.PLAYING_HUMAN
-            self._save_session_state()
+            self.save()
 
     def _finish_round(self) -> None:
         """End the round, update match scores, check for match winner."""
+        self.round_breakdown = self._compute_round_breakdown()
         round_points = self.state.round_points()
         self.final_points = round_points
         self.match_scores[0] += round_points[0]
         self.match_scores[1] += round_points[1]
+        # Stage round-end commentary (chkobba events take priority)
+        if self.pending_commentary is None:
+            diff = abs(round_points[0] - round_points[1])
+            if diff <= 1:
+                self._queue_commentary("close_call")
+            elif round_points[0] > round_points[1]:
+                self._queue_commentary("player_wins_round")
+            else:
+                self._queue_commentary("bot_wins_round")
         
         # Track round for persistence
         self.round_history.append((round_points[0], round_points[1]))
@@ -619,11 +1074,13 @@ class GameManager:
             
             # Save match to database
             self._persist_match()
-            clear_session(self.session_key)
+            # Persist final state so the user sees the match-over screen
+            # after a page reload; admin cleanup removes it after TTL.
+            self.save()
             return
 
         self.phase = GamePhase.ROUND_OVER
-        self._save_session_state()
+        self.save()
         
     def _persist_match(self) -> None:
         """Save the completed match to the database."""
@@ -645,11 +1102,18 @@ class GameManager:
         except Exception as e:
             logger.error("Failed to persist match: %s", e)
 
-    def view_data(self) -> dict:
-        """Build a dict for the Jinja template."""
-        debug = app.config["DEBUG_MODE"]
+    def view_data(self, viewer_seat: int = 0) -> dict:
+        """Build a dict for the Jinja template / SocketIO state snapshot.
 
-        # Start screen
+        *viewer_seat* (0 or 1) controls the perspective:
+          0 → player 0's hand is shown as "human_hand" (default, solo mode)
+          1 → player 1's hand is shown as "human_hand" (multiplayer player 1)
+        The "bot" fields always represent the *opponent* from the viewer's POV.
+        """
+        debug = app.config["DEBUG_MODE"]
+        is_solo = (self.mode == "solo")
+
+        # Start screen (no active game yet)
         if self.state is None:
             return {
                 "show_start_screen": True,
@@ -657,15 +1121,21 @@ class GameManager:
                 "debug": debug,
                 "match_scores": [0, 0],
                 "target_score": None,
-                "has_saved_session": load_session(self.session_key) is not None,
+                "has_saved_session": False,
+                "room_id": self.room_id,
+                "my_seat": viewer_seat,
+                "game_mode": self.mode,
             }
 
-        human = self.state.players[self.human_id]
-        bot = self.state.players[self.bot_id]
+        my_id  = viewer_seat
+        opp_id = 1 - viewer_seat
+
+        human = self.state.players[my_id]
+        opp   = self.state.players[opp_id]
 
         legal = self.state.legal_moves()
         move_buttons = []
-        if self._is_human_turn():
+        if self._is_human_turn(my_id):
             for i, move in enumerate(legal):
                 if move.is_capture:
                     cap = ", ".join(card_to_str(c) for c in move.captured_cards)
@@ -676,13 +1146,23 @@ class GameManager:
 
         # Capture map: hand_index -> list of {table_indices, is_capture}
         capture_map = {}
-        if self._is_human_turn():
+        if self._is_human_turn(my_id):
             for move in legal:
-                hand_idx, table_idxs = _move_to_indices(self.state, move, self.human_id)
+                hand_idx, table_idxs = _move_to_indices(self.state, move, my_id)
                 capture_map.setdefault(hand_idx, []).append({
                     "table_indices": table_idxs,
                     "is_capture": move.is_capture,
                 })
+
+        # Opponent display name — use real name from room blob for multiplayer.
+        opp_name = BOT_DEFAULT_NAME
+        opp_mood = self._get_bot_mood() if is_solo else "😐"
+        if not is_solo and self._store:
+            blob = self._store.get(self.room_id)
+            if blob:
+                room_players = blob.get("players", [])
+                if opp_id < len(room_players):
+                    opp_name = room_players[opp_id].get("display_name", "Opponent")
 
         # Debug info
         debug_data = {}
@@ -693,11 +1173,10 @@ class GameManager:
                 "deck_count": len(self.state.deck),
                 "table_count": len(self.state.table_cards),
                 "last_capturer": self.state.last_capturer,
-                "bot_hand": [card_to_str(c) for c in bot.hand],
+                "bot_hand": [card_to_str(c) for c in opp.hand],
             }
 
-        # Map each visual slot to the current compact table index used by move validation.
-        # This keeps selection/highlight correct even when slots preserve empty gaps.
+        # Map each visual slot → compact table index for move validation.
         slot_table_indices: list[int | None] = [None] * len(self.table_slots)
         used_slots: set[int] = set()
         for table_idx, table_card in enumerate(self.state.table_cards):
@@ -709,6 +1188,13 @@ class GameManager:
                     used_slots.add(slot_idx)
                     break
 
+        # Pending-bot fields are only meaningful in solo mode.
+        has_pending_bot        = is_solo and (self.pending_bot_move is not None)
+        pending_bot_played_card    = self.pending_bot_played_card if is_solo else None
+        pending_bot_captured_idxs  = self.pending_bot_captured_indices if is_solo else []
+        pending_bot_is_capture     = self.pending_bot_is_capture if is_solo else False
+        pending_bot_is_chkobba     = self.pending_bot_is_chkobba if is_solo else False
+
         return {
             "show_start_screen": False,
             "debug": debug,
@@ -719,11 +1205,12 @@ class GameManager:
             "match_over": self.phase == GamePhase.MATCH_OVER,
             "match_winner": self.match_winner,
             "show_next_round": self.phase == GamePhase.ROUND_OVER,
-            "has_pending_bot": self.pending_bot_move is not None,
+            "has_pending_bot": has_pending_bot,
             "last_human_played_table_index": self.last_human_played_table_index,
-            "pending_bot_captured_indices": self.pending_bot_captured_indices,
-            "pending_bot_played_card": self.pending_bot_played_card,
-            "pending_bot_is_capture": self.pending_bot_is_capture,
+            "pending_bot_captured_indices": pending_bot_captured_idxs,
+            "pending_bot_played_card": pending_bot_played_card,
+            "pending_bot_is_capture": pending_bot_is_capture,
+            "pending_bot_is_chkobba": pending_bot_is_chkobba,
             "last_played_card": self.last_played_card,
             "last_played_by": self.last_played_by,
 
@@ -737,16 +1224,18 @@ class GameManager:
                 for i, c in enumerate(self.table_slots)
             ],
 
-            # Human
+            # Viewer's hand ("human")
             "human_hand": [card_to_str(c) for c in human.hand],
             "human_captured_count": len(human.captured_cards),
             "human_chkobbas": human.chkobbas,
-            "human_is_current": self.state.current_player == self.human_id,
+            "human_is_current": self.state.current_player == my_id,
 
-            # Bot
-            "bot_hand_count": len(bot.hand),
-            "bot_captured_count": len(bot.captured_cards),
-            "bot_chkobbas": bot.chkobbas,
+            # Opponent ("bot" slot — could be the actual bot or the other human)
+            "bot_name": opp_name,
+            "bot_mood": opp_mood,
+            "bot_hand_count": len(opp.hand),
+            "bot_captured_count": len(opp.captured_cards),
+            "bot_chkobbas": opp.chkobbas,
 
             # Moves
             "move_buttons": move_buttons,
@@ -759,33 +1248,49 @@ class GameManager:
 
             # Final score
             "final_points": self.final_points,
+            "round_breakdown": self.round_breakdown,
+
+            # Commentary toast (consumed once per page render)
+            "commentary_toast": self._consume_commentary(),
 
             # Meta
             "deck_remaining": len(self.state.deck),
+
+            # SocketIO routing
+            "room_id": self.room_id,
+            "my_seat": viewer_seat,
+            "game_mode": self.mode,
         }
 
 
-# Per-browser game instances keyed by client_session_key (Flask session).
-# See deployment note above: not shared across Gunicorn workers without sticky sessions.
-MANAGERS: dict[str, GameManager] = {}
+# ---------------------------------------------------------------------------
+# Store-aware session helpers
+# ---------------------------------------------------------------------------
 
-
-def _client_session_key() -> str:
-    key = session.get("client_session_key")
-    if not key:
-        key = secrets.token_hex(16)
-        session["client_session_key"] = key
-    return key
+def _get_solo_room_id() -> str:
+    """Return the solo room_id for this browser session, creating one if absent."""
+    room_id = session.get("solo_room_id")
+    if not room_id:
+        room_id = secrets.token_hex(16)
+        session["solo_room_id"] = room_id
+    return room_id
 
 
 def _get_manager() -> GameManager:
-    key = _client_session_key()
-    manager = MANAGERS.get(key)
-    if manager is None:
-        manager = GameManager(session_key=key)
-        manager.resume_saved_session()
-        MANAGERS[key] = manager
-    return manager
+    """Load the current game from the store, or return a fresh MENU manager.
+
+    If the store has the room, the game is resumed transparently.
+    If the room has expired or the user has no session, shows the start screen.
+    """
+    room_id = session.get("solo_room_id")
+    if room_id:
+        try:
+            return GameManager.load(room_id, app.game_store)
+        except RoomNotFoundError:
+            # Room expired in the store — clear the stale session key.
+            session.pop("solo_room_id", None)
+    # No room or expired → fresh manager shows the start screen.
+    return GameManager(room_id="__no_room__", store=app.game_store)
 
 
 # ---------------------------------------------------------------------------
@@ -803,16 +1308,19 @@ def index():
             app.config["DEBUG_MODE"] = False
 
     manager = _get_manager()
-    return render_template("index.html", **manager.view_data())
+    ctx = manager.view_data()
+
+    # Guest profile — available on every page render.
+    _gid = session.get("guest_id", "")
+    _dn  = session.get("display_name", "Guest")
+    ctx["display_name"]   = _dn
+    ctx["avatar_initial"] = _dn[0].upper() if _dn else "G"
+    ctx["avatar_color"]   = avatar_color(_gid)
+
+    return render_template("index.html", **ctx)
 
 
-@app.route("/history")
-def history():
-    return render_template(
-        "history.html",
-        matches=get_match_history(limit=50),
-        stats=get_statistics(),
-    )
+    # /history route is defined later in the multiplayer section
 
 
 @app.route("/move/<int:move_index>", methods=["POST"])
@@ -851,23 +1359,21 @@ def play_selected():
 @app.route("/start", methods=["POST"])
 @csrf_protect
 def start():
-    manager = _get_manager()
     target_score = request.form.get("target_score", type=int)
     if target_score not in TARGET_SCORES:
         flash("Invalid target score.")
         return redirect(url_for("index"))
-    manager.start_game(target_score)
+    room_id = _get_solo_room_id()          # creates/reuses session entry
+    GameManager.create(room_id, target_score, app.game_store)
     return redirect(url_for("index"))
 
 
 @app.route("/resume", methods=["POST"])
 @csrf_protect
 def resume():
-    manager = _get_manager()
-    if manager.resume_saved_session():
-        flash("Resumed saved game session.")
-    else:
-        flash("No saved session found.")
+    # Game state is now auto-resumed from the store by _get_manager()
+    # on every GET /.  This route is kept for backward-compat with any
+    # existing "Resume" button in the template.
     return redirect(url_for("index"))
 
 
@@ -879,6 +1385,69 @@ def commit_bot():
     return redirect(url_for("index"))
 
 
+# ---------------------------------------------------------------------------
+# JSON API endpoints (used by the AJAX game engine)
+# ---------------------------------------------------------------------------
+
+@app.route("/api/play", methods=["POST"])
+@csrf_protect
+def api_play():
+    """Process a human move and return the new game state as JSON."""
+    manager = _get_manager()
+    hand_index_str  = request.form.get("hand_index", "")
+    table_indices_str = request.form.get("table_indices", "")
+
+    try:
+        hand_index = int(hand_index_str)
+    except (ValueError, TypeError):
+        return jsonify({"error": "Invalid hand selection"}), 400
+
+    table_indices: list[int] = []
+    if table_indices_str:
+        try:
+            table_indices = [int(x) for x in table_indices_str.split(",") if x]
+        except (ValueError, TypeError):
+            return jsonify({"error": "Invalid table selection"}), 400
+
+    manager._apply_selected_move(hand_index, table_indices)
+    return jsonify(manager.view_data())
+
+
+@app.route("/api/bot_move", methods=["POST"])
+@csrf_protect
+def api_bot_move():
+    """Commit the pending bot move and return the new game state as JSON."""
+    manager = _get_manager()
+    manager.commit_bot_move()
+    return jsonify(manager.view_data())
+
+
+@app.route("/api/profile/name", methods=["POST"])
+def api_update_name():
+    """Update the guest's display name.  Accepts JSON: {name, _csrf_token}."""
+    data = request.get_json(force=True, silent=True) or {}
+
+    # CSRF validation (read token from JSON body)
+    token = session.get("_csrf_token")
+    if not token or not hmac.compare_digest(token, str(data.get("_csrf_token", ""))):
+        return jsonify({"error": "Invalid CSRF token"}), 403
+
+    name = (data.get("name") or "").strip()[:30]
+    if not name:
+        return jsonify({"error": "Name cannot be empty"}), 400
+    if not is_clean(name):
+        return jsonify({"error": "Name contains inappropriate words"}), 400
+
+    guest_id = session.get("guest_id")
+    if not guest_id:
+        return jsonify({"error": "No guest session"}), 401
+
+    _update_display_name(guest_id, name)
+    session["display_name"] = name
+    logger.info("Guest %.8s changed name to %r", guest_id, name)
+    return jsonify({"ok": True, "name": name})
+
+
 @app.route("/next_round", methods=["POST"])
 @csrf_protect
 def next_round():
@@ -887,21 +1456,576 @@ def next_round():
     return redirect(url_for("index"))
 
 
+# ---------------------------------------------------------------------------
+# Multiplayer lobby routes (Phase 4 — Break 2)
+# ---------------------------------------------------------------------------
+
+def _create_mp_room(
+    visibility: str,
+    guest_id: str,
+    display_name: str,
+    target_score: int = 11,
+) -> dict:
+    """Create a multiplayer room blob with one player (the creator) and save it."""
+    from datetime import datetime, timezone
+
+    room_id = secrets.token_hex(12)
+    now = datetime.now(timezone.utc).isoformat()
+    blob = {
+        "room_id": room_id,
+        "mode": "1v1",
+        "visibility": visibility,
+        "created_by": guest_id,
+        "target_score_mp": target_score,
+        "status": "waiting",
+        "created_at": now,
+        "last_action_at": now,
+        "players": [
+            {
+                "guest_id": guest_id,
+                "display_name": display_name,
+                "seat": 0,
+                "is_bot": False,
+                "connected": False,
+                "sid": None,
+            }
+        ],
+        "game": {},
+    }
+    app.game_store.set(room_id, blob, ttl_seconds=7200)
+    return blob
+
+
+@app.route("/lobby")
+def lobby():
+    """Public lobby — lists open public rooms."""
+    _ensure_guest_session()
+    open_rooms = []
+    for room_id in app.game_store.list_active():
+        blob = app.game_store.get(room_id)
+        if blob is None:
+            continue
+        if blob.get("mode") != "1v1":
+            continue
+        if blob.get("visibility") != "public":
+            continue
+        if blob.get("status") != "waiting":
+            continue
+        if len(blob.get("players", [])) >= 2:
+            continue
+        creator = blob["players"][0] if blob.get("players") else {}
+        dn = creator.get("display_name", "?")
+        open_rooms.append(
+            {
+                "room_id": room_id,
+                "creator_name": dn,
+                "creator_initial": dn[0].upper() if dn else "?",
+                "creator_color": avatar_color(creator.get("guest_id", "")),
+                "created_at": blob.get("created_at", ""),
+                "target_score": blob.get("target_score_mp", 11),
+            }
+        )
+    _gid = session.get("guest_id", "")
+    _dn  = session.get("display_name", "Guest")
+    return render_template(
+        "lobby.html",
+        open_rooms=open_rooms,
+        display_name=_dn,
+        avatar_initial=_dn[0].upper() if _dn else "G",
+        avatar_color=avatar_color(_gid),
+    )
+
+
+@app.route("/play/<room_id>")
+def play_room(room_id: str):
+    """Multiplayer game room — join if there is a free seat, else spectate."""
+    _ensure_guest_session()
+    guest_id = session.get("guest_id", "")
+    display_name = session.get("display_name", "Guest")
+
+    blob = app.game_store.get(room_id)
+    if blob is None or blob.get("mode") not in ("1v1", "solo"):
+        return render_template(
+            "play.html",
+            room_not_found=True,
+            room_full=False,
+            blob={"room_id": room_id, "players": [], "target_score_mp": 11, "chat": []},
+            my_seat=0,
+            game_active=False,
+            invite_url=None,
+            display_name=display_name,
+            avatar_initial=display_name[0].upper() if display_name else "G",
+            avatar_color=avatar_color(guest_id),
+            **_empty_game_ctx(),
+        )
+
+    # Solo bot room: skip seat-claiming logic — the human is always seat 0.
+    if blob.get("mode") == "solo":
+        game_active = blob.get("status") == "active"
+        game_ctx: dict = {}
+        if game_active:
+            try:
+                mgr = GameManager.load(room_id, app.game_store)
+                game_ctx = mgr.view_data(viewer_seat=0)
+            except Exception:
+                game_active = False
+                game_ctx = _empty_game_ctx()
+        else:
+            game_ctx = _empty_game_ctx()
+        # Strip keys that are passed explicitly to avoid duplicate-keyword errors.
+        for _k in ("my_seat", "room_id", "game_mode", "show_start_screen"):
+            game_ctx.pop(_k, None)
+        return render_template(
+            "play.html",
+            room_not_found=False,
+            room_full=False,
+            blob=blob,
+            room_id=room_id,          # explicit — prevents fallback to session solo_room_id
+            game_mode="solo",
+            my_seat=0,
+            game_active=game_active,
+            invite_url=None,
+            display_name=display_name,
+            avatar_initial=display_name[0].upper() if display_name else "G",
+            avatar_color=avatar_color(guest_id),
+            **game_ctx,
+        )
+
+    # Find whether the visitor already has a seat.
+    my_seat: int | None = None
+    for p in blob.get("players", []):
+        if p.get("guest_id") == guest_id:
+            my_seat = p["seat"]
+            break
+
+    room_full = len(blob.get("players", [])) >= 2
+
+    if my_seat is None and room_full:
+        # Room is full — show a "game full" page.
+        return render_template(
+            "play.html",
+            room_not_found=False,
+            room_full=True,
+            blob=blob,
+            my_seat=0,
+            game_active=False,
+            invite_url=None,
+            display_name=display_name,
+            avatar_initial=display_name[0].upper(),
+            avatar_color=avatar_color(guest_id),
+            **_empty_game_ctx(),
+        )
+
+    if my_seat is None:
+        # Join as player 1.
+        from datetime import datetime, timezone
+        my_seat = len(blob["players"])  # will be 1
+        blob["players"].append(
+            {
+                "guest_id": guest_id,
+                "display_name": display_name,
+                "seat": my_seat,
+                "is_bot": False,
+                "connected": False,
+                "sid": None,
+            }
+        )
+        blob["last_action_at"] = datetime.now(timezone.utc).isoformat()
+        # If the room was public, remove it from lobby visibility now.
+        if blob.get("visibility") == "public":
+            blob["visibility"] = "private_matched"
+        app.game_store.set(room_id, blob)
+        # Notify any connected SocketIO clients in the room about the new player.
+        socketio.emit(
+            "room_player_joined",
+            {
+                "seat": my_seat,
+                "display_name": display_name,
+                "avatar_initial": display_name[0].upper(),
+                "avatar_color": avatar_color(guest_id),
+                "room_id": room_id,
+            },
+            to=room_id,
+        )
+        # Announce removal to lobby viewers.
+        socketio.emit(
+            "lobby_update",
+            {"action": "remove", "room_id": room_id},
+            to="lobby",
+        )
+
+    game_active = blob.get("status") == "active"
+    game_ctx: dict = {}
+    if game_active:
+        try:
+            mgr = GameManager.load(room_id, app.game_store)
+            game_ctx = mgr.view_data(viewer_seat=my_seat)
+        except Exception:
+            game_active = False
+            game_ctx = _empty_game_ctx()
+    else:
+        game_ctx = _empty_game_ctx()
+
+    invite_url = (
+        request.host_url.rstrip("/") + f"/play/{room_id}"
+        if blob.get("visibility") in ("public", "private")
+        else None
+    )
+
+    # Strip keys that are passed explicitly to avoid duplicate keyword arguments.
+    for _k in ("my_seat", "room_id", "game_mode", "show_start_screen"):
+        game_ctx.pop(_k, None)
+
+    return render_template(
+        "play.html",
+        room_not_found=False,
+        room_full=False,
+        blob=blob,
+        room_id=room_id,
+        game_mode="1v1",
+        my_seat=my_seat,
+        game_active=game_active,
+        invite_url=invite_url,
+        display_name=display_name,
+        avatar_initial=display_name[0].upper() if display_name else "G",
+        avatar_color=avatar_color(guest_id),
+        **game_ctx,
+    )
+
+
+def _empty_game_ctx() -> dict:
+    """Placeholder values for game-board Jinja2 variables when game hasn't started."""
+    return {
+        "show_start_screen": False,
+        "debug": False,
+        "debug_data": {},
+        "capture_map": {},
+        "target_score": None,
+        "match_scores": [0, 0],
+        "match_over": False,
+        "match_winner": None,
+        "show_next_round": False,
+        "has_pending_bot": False,
+        "last_human_played_table_index": None,
+        "pending_bot_captured_indices": [],
+        "pending_bot_played_card": None,
+        "pending_bot_is_capture": False,
+        "pending_bot_is_chkobba": False,
+        "last_played_card": None,
+        "last_played_by": None,
+        "table_cards": [],
+        "table_slots": [],
+        "human_hand": [],
+        "human_captured_count": 0,
+        "human_chkobbas": 0,
+        "human_is_current": False,
+        "bot_name": "Opponent",
+        "bot_mood": "😐",
+        "bot_hand_count": 0,
+        "bot_captured_count": 0,
+        "bot_chkobbas": 0,
+        "move_buttons": [],
+        "round_over": False,
+        "messages": [],
+        "last_human_move": None,
+        "last_bot_move": None,
+        "final_points": None,
+        "round_breakdown": [],
+        "commentary_toast": None,
+        "deck_remaining": 0,
+    }
+
+
+@app.route("/api/rooms/quickmatch", methods=["POST"])
+def api_quickmatch():
+    """Join the matchmaking queue or pair with a waiting opponent."""
+    _ensure_guest_session()
+    data = request.get_json(force=True, silent=True) or {}
+
+    token = session.get("_csrf_token")
+    if not token or not hmac.compare_digest(token, str(data.get("_csrf_token", ""))):
+        return jsonify({"error": "Invalid CSRF token"}), 403
+
+    guest_id     = session.get("guest_id", "")
+    display_name = session.get("display_name", "Guest")
+    target_score = int(data.get("target_score", 11))
+    if target_score not in MP_TARGET_SCORES:
+        target_score = 11
+
+    queue: MatchmakingQueue = app.matchmaking_queue
+
+    # Try to find an opponent already waiting.
+    opponent = queue.pop_opponent(exclude_guest_id=guest_id)
+    if opponent:
+        room_id = opponent["room_id"]
+        blob = app.game_store.get(room_id)
+        if blob is None:
+            # Their room expired — treat as no opponent and queue ourselves.
+            opponent = None
+        else:
+            # Pair: add ourselves as player 1.
+            from datetime import datetime, timezone
+            blob["players"].append(
+                {
+                    "guest_id": guest_id,
+                    "display_name": display_name,
+                    "seat": 1,
+                    "is_bot": False,
+                    "connected": False,
+                    "sid": None,
+                }
+            )
+            blob["last_action_at"] = datetime.now(timezone.utc).isoformat()
+            blob["visibility"] = "private_matched"
+            app.game_store.set(room_id, blob)
+
+            # Notify the opponent that someone joined.
+            socketio.emit(
+                "matchmaking_status",
+                {
+                    "status": "matched",
+                    "room_id": room_id,
+                    "opponent_name": display_name,
+                },
+                to=room_id,
+            )
+            logger.info(
+                "[matchmaking] paired %s with %s in room %.8s",
+                guest_id,
+                opponent["guest_id"],
+                room_id,
+            )
+            return jsonify({"matched": True, "room_id": room_id, "opponent": opponent["display_name"]})
+
+    # No opponent — create a waiting room and queue ourselves.
+    blob = _create_mp_room("private", guest_id, display_name, target_score)
+    room_id = blob["room_id"]
+    queue.enqueue(guest_id, display_name, room_id)
+
+    return jsonify({"matched": False, "room_id": room_id})
+
+
+@app.route("/api/rooms/cancel_queue", methods=["POST"])
+def api_cancel_queue():
+    """Remove the current player from the matchmaking queue."""
+    _ensure_guest_session()
+    data = request.get_json(force=True, silent=True) or {}
+    token = session.get("_csrf_token")
+    if not token or not hmac.compare_digest(token, str(data.get("_csrf_token", ""))):
+        return jsonify({"error": "Invalid CSRF token"}), 403
+
+    guest_id = session.get("guest_id", "")
+    app.matchmaking_queue.cancel(guest_id)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/rooms/invite", methods=["POST"])
+def api_create_invite():
+    """Create a private room and return the invite URL."""
+    _ensure_guest_session()
+    data = request.get_json(force=True, silent=True) or {}
+    token = session.get("_csrf_token")
+    if not token or not hmac.compare_digest(token, str(data.get("_csrf_token", ""))):
+        return jsonify({"error": "Invalid CSRF token"}), 403
+
+    guest_id     = session.get("guest_id", "")
+    display_name = session.get("display_name", "Guest")
+    target_score = int(data.get("target_score", 11))
+    if target_score not in MP_TARGET_SCORES:
+        target_score = 11
+
+    blob     = _create_mp_room("private", guest_id, display_name, target_score)
+    room_id  = blob["room_id"]
+    invite_url = request.host_url.rstrip("/") + f"/play/{room_id}"
+    return jsonify({"room_id": room_id, "invite_url": invite_url})
+
+
+@app.route("/api/rooms/public", methods=["POST"])
+def api_create_public_room():
+    """Create a public room visible in the lobby."""
+    _ensure_guest_session()
+    data = request.get_json(force=True, silent=True) or {}
+    token = session.get("_csrf_token")
+    if not token or not hmac.compare_digest(token, str(data.get("_csrf_token", ""))):
+        return jsonify({"error": "Invalid CSRF token"}), 403
+
+    guest_id     = session.get("guest_id", "")
+    display_name = session.get("display_name", "Guest")
+    target_score = int(data.get("target_score", 11))
+    if target_score not in MP_TARGET_SCORES:
+        target_score = 11
+
+    blob    = _create_mp_room("public", guest_id, display_name, target_score)
+    room_id = blob["room_id"]
+
+    # Announce to all current lobby viewers.
+    socketio.emit(
+        "lobby_update",
+        {
+            "action": "add",
+            "room": {
+                "room_id": room_id,
+                "creator_name": display_name,
+                "creator_initial": display_name[0].upper() if display_name else "?",
+                "creator_color": avatar_color(guest_id),
+                "target_score": target_score,
+            },
+        },
+        to="lobby",
+    )
+    return jsonify({"room_id": room_id})
+
+
+@app.route("/api/rooms/create-bot", methods=["POST"])
+def api_create_bot_room():
+    """Create a solo-vs-bot room and return its ID.
+
+    The room uses mode='solo' so all existing bot logic applies unchanged.
+    The bot seat is pre-filled; the game starts the moment the human connects.
+    """
+    _ensure_guest_session()
+    guest_id     = session.get("guest_id", "")
+    display_name = session.get("display_name", "Guest")
+
+    data         = request.get_json(force=True, silent=True) or {}
+    target_score = int(data.get("target_score", 11))
+    if target_score not in MP_TARGET_SCORES:
+        target_score = 11
+
+    from datetime import datetime, timezone
+    room_id = secrets.token_urlsafe(9)
+    now     = datetime.now(timezone.utc).isoformat()
+    blob = {
+        "room_id":         room_id,
+        "mode":            "solo",
+        "status":          "waiting",
+        "visibility":      "private",
+        "created_by":      guest_id,
+        "target_score_mp": target_score,
+        "created_at":      now,
+        "last_action_at":  now,
+        "players": [
+            {"guest_id": guest_id,  "display_name": display_name, "seat": 0,
+             "is_bot": False, "connected": False, "sid": None},
+            {"guest_id": "bot",     "display_name": BOT_DEFAULT_NAME, "seat": 1,
+             "is_bot": True,  "connected": True,  "sid": None},
+        ],
+        "chat": [],
+    }
+    app.game_store.set(room_id, blob)
+    return jsonify({"room_id": room_id})
+
+
+@app.route("/history")
+def history():
+    """Show the current user's last 20 matches."""
+    _ensure_guest_session()
+    from models.db import get_user_matches
+    guest_id = session.get("guest_id", "")
+    display_name = session.get("display_name", "Guest")
+    matches = get_user_matches(guest_id, limit=20)
+    return render_template(
+        "history.html",
+        matches=matches,
+        guest_id=guest_id,
+        display_name=display_name,
+        avatar_initial=display_name[0].upper() if display_name else "G",
+        avatar_color=avatar_color(guest_id),
+    )
+
+
+@app.route("/api/rooms/<room_id>/cancel", methods=["POST"])
+def api_cancel_room(room_id: str):
+    """Room creator cancels a waiting (or starting) room."""
+    _ensure_guest_session()
+    guest_id = session.get("guest_id", "")
+    blob = app.game_store.get(room_id)
+    if blob is None:
+        return jsonify({"error": "Room not found"}), 404
+    players = blob.get("players", [])
+    if not players or players[0].get("guest_id") != guest_id:
+        return jsonify({"error": "Not authorized — only the room creator can cancel"}), 403
+    if blob.get("status") not in ("waiting", "starting"):
+        return jsonify({"error": "Cannot cancel an active or finished game"}), 400
+    app.game_store.delete(room_id)
+    socketio.emit("room_closed", {"room_id": room_id}, to=room_id)
+    if blob.get("visibility") == "public":
+        socketio.emit("lobby_update", {"action": "remove", "room_id": room_id}, to="lobby")
+    return jsonify({"ok": True, "redirect": url_for("lobby")})
+
+
 @app.route("/restart", methods=["POST"])
 @csrf_protect
 def restart():
-    manager = _get_manager()
-    manager.restart()
+    room_id = session.pop("solo_room_id", None)
+    if room_id:
+        app.game_store.delete(room_id)
     return redirect(url_for("index"))
 
+
+# ---------------------------------------------------------------------------
+# Admin utilities
+# ---------------------------------------------------------------------------
+
+@app.route("/admin/cleanup", methods=["POST"])
+def admin_cleanup():
+    """Delete match_over rooms older than 1 hour.
+
+    Protected by ADMIN_TOKEN env var.  Call with:
+        curl -X POST -H "X-Admin-Token: <token>" http://host/admin/cleanup
+    """
+    from datetime import datetime, timezone, timedelta
+
+    expected = os.environ.get("ADMIN_TOKEN", "")
+    provided = request.headers.get("X-Admin-Token", "") or request.form.get("admin_token", "")
+    if not expected or not hmac.compare_digest(expected, provided):
+        return jsonify({"error": "unauthorized"}), 403
+
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=1)
+    deleted: list[str] = []
+
+    for room_id in app.game_store.list_active():
+        blob = app.game_store.get(room_id)
+        if blob is None:
+            continue
+        if blob.get("status") != "match_over":
+            continue
+        last_action = blob.get("last_action_at", "")
+        try:
+            if datetime.fromisoformat(last_action) < cutoff:
+                app.game_store.delete(room_id)
+                deleted.append(room_id)
+        except (ValueError, TypeError):
+            pass
+
+    logger.info("Admin cleanup: removed %d stale match_over rooms", len(deleted))
+    return jsonify({"deleted": len(deleted), "room_ids": deleted})
+
+
+# ---------------------------------------------------------------------------
+# Register SocketIO event handlers.
+# Must come AFTER all symbols in this module are defined (sockets.py imports
+# app, socketio, GameManager, etc. from here) but BEFORE socketio.run()
+# blocks.  This placement ensures handlers are registered when the server is
+# started with `python app.py` (where __name__ == "__main__" would block).
+# ---------------------------------------------------------------------------
+# Ensure `import ui.app` points to this exact module instance when the app is
+# launched as a script (`python ui/app.py`).  Without this alias, ui.sockets
+# can import a second module instance, causing event handlers to bind to a
+# different SocketIO object than the one that is actually serving requests.
+if __name__ == "__main__":
+    sys.modules.setdefault("ui.app", sys.modules[__name__])
+
+import ui.sockets  # noqa: F401, E402
 
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    # Local development only. Production uses: gunicorn ui.app:app
+    # Local development:  python ui/app.py
+    # Production:         gunicorn -k eventlet -w 1 --bind 0.0.0.0:$PORT ui.app:app
     _port = int(os.environ.get("PORT", "5000"))
     _debug = os.environ.get("FLASK_DEBUG", "1").lower() in ("1", "true", "yes")
-    print("Chkobba Web UI — http://127.0.0.1:%s (FLASK_DEBUG=%s)" % (_port, _debug))
-    app.run(host="0.0.0.0", port=_port, debug=_debug)
+    print("Chkobba Web UI — http://127.0.0.1:%s  (async_mode=%s)" % (_port, _ASYNC_MODE))
+    socketio.run(app, host="0.0.0.0", port=_port, debug=_debug, use_reloader=_debug)

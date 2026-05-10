@@ -2,509 +2,1474 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Chkobba - Tunisian Card Game</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>Chkobba</title>
+    <link rel="icon" href="data:,">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@700;900&family=Inter:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Caveat:wght@400;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ static_url('style.css') }}">
+    <meta name="csrf-token" content="{{ csrf_token() }}">
+    <!-- Socket.IO client (Phase 3) — pinned CDN, no bundler required -->
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js" crossorigin="anonymous"></script>
+    <script src="{{ static_url('js/socket-client.js') }}"></script>
 </head>
 <body>
-    <div class="app-shell">
-        <!-- Top Bar -->
-        <header class="top-bar">
-            <div class="top-bar-left">
-                <h1 class="app-title">Chkobba</h1>
+<div id="syncing-dot" aria-hidden="true"></div>
+
+<!-- ════════════════ HUD ════════════════ -->
+<header class="hud">
+    <div class="hud-brand">Chkobba</div>
+
+    <div class="hud-scores">
+        <div class="hud-score you">
+            <button class="hs-label player-name-btn" id="open-name-modal" title="Change your name" aria-label="Change name">
+                <span class="avatar-dot" style="background:{{ avatar_color }}">{{ avatar_initial }}</span>
+                <span class="hs-name-text">{{ display_name }}</span>
+            </button>
+            <span class="hs-val">{{ match_scores[0] }}</span>
+        </div>
+        {% if target_score %}
+        <div class="hud-score target">
+            <span class="hs-label">Target</span>
+            <span class="hs-val gold">{{ target_score }}</span>
+        </div>
+        {% endif %}
+        <div class="hud-score bot">
+            <span class="hs-label">Bot</span>
+            <span class="hs-val">{{ match_scores[1] }}</span>
+        </div>
+    </div>
+
+    <nav class="hud-nav">
+        <!-- SocketIO connection status indicator (Phase 3) -->
+        <span class="conn-dot" title="Connection status" aria-hidden="true"></span>
+        <!-- Sound toggle + slider -->
+        <div class="sound-wrap">
+            <button id="sound-btn" class="hud-icon-btn" title="Enable café sounds" aria-label="Toggle ambient sound">🔇</button>
+            <div class="sound-panel">
+                <input id="sound-slider" type="range" min="0" max="1" step="0.05" value="0.18" class="sound-slider" aria-label="Volume">
+                <button id="toast-toggle-btn" class="toast-toggle" title="Toggle commentary">💬</button>
             </div>
-            <div class="top-bar-center">
-                <div class="score-display">
-                    {% if target_score %}
-                    <div class="score-item target-score">
-                        <span class="score-label">Target</span>
-                        <span class="score-value">{{ target_score }}</span>
-                    </div>
-                    {% endif %}
-                    <div class="score-item your-score">
-                        <span class="score-label">You</span>
-                        <span class="score-value">{{ match_scores[0] }}</span>
-                    </div>
-                    <div class="score-item bot-score">
-                        <span class="score-label">Bot</span>
-                        <span class="score-value">{{ match_scores[1] }}</span>
-                    </div>
-                </div>
-            </div>
-            <div class="top-bar-right">
-                <a href="{{ url_for('index', debug=1 if not debug else 0) }}" class="btn-icon" title="Toggle Debug Mode">
-                    <span class="debug-indicator {% if debug %}active{% endif %}">🔍</span>
-                </a>
-                <form action="{{ url_for('restart') }}" method="post" class="inline-form">                        <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">                    <button type="submit" class="btn-secondary">Menu</button>
-                </form>
-            </div>
+        </div>
+        <a href="{{ url_for('history') }}" class="hud-btn" title="Match history">History</a>
+        {% if not show_start_screen %}
+        <a href="{{ url_for('index', debug=1 if not debug else 0) }}" class="hud-icon-btn" title="Debug">
+            <span class="{% if debug %}dbg-active{% endif %}">⚙</span>
+        </a>
+        <form action="{{ url_for('restart') }}" method="post" class="inl">
+            <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+            <button class="hud-btn">Menu</button>
+        </form>
+        {% else %}
+        <a href="{{ url_for('history') }}" class="hud-btn">History</a>
+        {% endif %}
+    </nav>
+</header>
+
+<!-- Flash -->
+{% with msgs = get_flashed_messages() %}
+{% if msgs %}
+<div class="flashes">
+    {% for m in msgs %}<div class="flash">{{ m }}</div>{% endfor %}
+</div>
+{% endif %}
+{% endwith %}
+
+<!-- ════════════════ LANDING ════════════════ -->
+{% if show_start_screen %}
+<main class="landing">
+    <div class="landing-glow"></div>
+    <div class="landing-content">
+
+        <header class="landing-header">
+            <h1 class="landing-title">Chkobba</h1>
+            <p class="landing-sub">Tunisian Card Game</p>
         </header>
 
-        <!-- Flash Messages -->
-        {% with messages = get_flashed_messages() %}
-            {% if messages %}
-                <div class="flash-messages">
-                    {% for msg in messages %}
-                        <div class="flash-message">{{ msg }}</div>
+        <div class="landing-preview" aria-hidden="true">
+            <div class="prev-card red-suit" style="--r:-8deg;--y:-4px">7♦</div>
+            <div class="prev-card"          style="--r:-3deg;--y: 2px">A♠</div>
+            <div class="prev-card red-suit" style="--r: 4deg;--y:-2px">K♥</div>
+            <div class="prev-card"          style="--r: 9deg;--y: 5px">Q♣</div>
+        </div>
+
+        <!-- Player identity — always visible on landing -->
+        <div class="landing-identity">
+            <span class="avatar-dot" style="background:{{ avatar_color }}">{{ avatar_initial }}</span>
+            <span class="landing-player-name">{{ display_name }}</span>
+            <button class="landing-name-edit" id="open-name-modal" title="Change name" aria-label="Change display name">✏</button>
+        </div>
+
+        <!-- Multiplayer entry points -->
+        <div class="landing-mp-row">
+            <button id="landing-bot-btn" class="btn-mp btn-mp-primary" title="Play against the bot">
+                🤖 Play vs Bot
+            </button>
+            <button id="landing-quickmatch-btn" class="btn-mp btn-mp-secondary" title="Find a random opponent">
+                ⚔ Quick Match — 1v1
+            </button>
+            <button id="landing-invite-btn" class="btn-mp btn-mp-secondary" title="Invite a friend with a link">
+                🔗 Play with a Friend
+            </button>
+            <a href="{{ url_for('lobby') }}" class="btn-mp btn-mp-ghost" title="Browse open games">
+                🏛 Public Lobby
+            </a>
+        </div>
+
+        <div class="landing-divider"><span>or play solo vs bot</span></div>
+
+        <div class="landing-box">
+            {% if has_saved_session %}
+            <form action="{{ url_for('resume') }}" method="post" class="inl landing-resume">
+                <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+                <button class="btn-resume">⟳ &nbsp;Resume Last Game</button>
+            </form>
+            <div class="divider"><span>or start new</span></div>
+            {% endif %}
+
+            <form action="{{ url_for('start') }}" method="post">
+                <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+                <p class="landing-label">Play to</p>
+                <div class="target-opts">
+                    {% for score in target_scores %}
+                    <label class="target-opt">
+                        <input type="radio" name="target_score" value="{{ score }}" {% if loop.first %}checked{% endif %}>
+                        <span class="opt-val">{{ score }}</span>
+                        <span class="opt-pts">pts</span>
+                    </label>
                     {% endfor %}
                 </div>
-            {% endif %}
-        {% endwith %}
+                <button class="btn-deal">Deal Cards</button>
+            </form>
+        </div>
 
-        <!-- Start Screen Modal -->
-        {% if show_start_screen %}
-            <div class="modal-overlay active">
-                <div class="modal start-modal">
-                    <div class="modal-header">
-                        <h2>Start New Match</h2>
-                    </div>
-                    <div class="modal-body">
-                        <p>Choose your target score</p>
-                        <div style="margin-bottom: 1rem; display: flex; gap: 0.6rem; justify-content: center; flex-wrap: wrap;">
-                            {% if has_saved_session %}
-                            <form action="{{ url_for('resume') }}" method="post" class="inline-form">
-                                <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
-                                <button type="submit" class="btn-secondary">Resume Last Game</button>
-                            </form>
-                            {% endif %}
-                            <a href="{{ url_for('history') }}" class="btn-secondary">Match History</a>
-                        </div>
-                        <form action="{{ url_for('start') }}" method="post">
-                            <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
-                            <div class="target-options">
-                                {% for score in target_scores %}
-                                    <label class="target-option">
-                                        <input type="radio" name="target_score" value="{{ score }}" {% if loop.first %}checked{% endif %}>
-                                        <span class="option-circle">{{ score }}</span>
-                                        <span class="option-text">points</span>
-                                    </label>
-                                {% endfor %}
-                            </div>
-                            <button type="submit" class="btn-primary btn-large">Start Game</button>
-                        </form>
-                    </div>
-                </div>
-            </div>
-        {% else %}
-            <!-- Main Game Board -->
-            <main class="game-container">
-                <!-- Large Table Area with Hands Integrated -->
-                <section class="table-area">
-                    <!-- Opponent Info & Hand (Top) -->
-                    <div class="table-section opponent-section">
-                        <div class="opponent-info">
-                            <h3 class="opponent-name">Bot</h3>
-                            {% if not human_is_current and not round_over and not has_pending_bot %}
-                                <span class="turn-badge thinking">Thinking…</span>
-                            {% elif has_pending_bot %}
-                                <span class="turn-badge thinking">Playing…</span>
-                            {% endif %}
-                        </div>
-                        <div class="opponent-hand-display">
-                            {% for _ in range(bot_hand_count) %}
-                                <div class="card-back"></div>
-                            {% endfor %}
-                            {% if has_pending_bot %}
-                                <div class="card bot-capture-card {% if '♥' in pending_bot_played_card or '♦' in pending_bot_played_card %}red-suit{% endif %}">{{ pending_bot_played_card }}</div>
-                            {% endif %}
-                            {% if bot_hand_count == 0 and not has_pending_bot %}
-                                <span class="empty-hand">No cards</span>
-                            {% endif %}
-                        </div>
-                        <div class="opponent-stats-compact">
-                            <span>{{ bot_captured_count }} Captured</span>
-                            <span>{{ bot_chkobbas }} Chkobbas</span>
-                        </div>
-                    </div>
-
-                    <!-- Table Felt with Cards (Center) -->
-                    <div class="table-felt table" aria-label="Play area">
-                        <h3 class="table-label">Table</h3>
-                        <div class="card-display table-cards" id="table-cards">
-                            {% if table_slots and (table_slots | map(attribute='card') | select | list) %}
-                                {% for slot in table_slots %}
-                                    {% if slot.card %}
-                                    <div class="card table-card {% if '♥' in slot.card or '♦' in slot.card %}red-suit{% endif %}
-                                        {% if human_is_current and not round_over and not has_pending_bot %}selectable{% endif %}
-                                        {% if loop.index0 == last_human_played_table_index %}human-played{% endif %}
-                                        {% if slot.card == last_played_card and last_played_by == 'human' %}fly-from-human{% endif %}
-                                        {% if slot.card == last_played_card and last_played_by == 'bot' %}fly-from-bot{% endif %}"
-                                        data-table-index="{{ slot.table_index }}"
-                                    >{{ slot.card }}</div>
-                                    {% else %}
-                                    <div class="card table-card table-slot-empty" aria-hidden="true"></div>
-                                    {% endif %}
-                                {% endfor %}
-                            {% else %}
-                                <div class="empty-table">No cards on table</div>
-                            {% endif %}
-                        </div>
-                    </div>
-
-                    <!-- Your Hand & Stats (Bottom) -->
-                    <div class="table-section player-section">
-                        <div class="player-hand-display" id="hand-cards">
-                            {% if human_hand %}
-                                {% for card in human_hand %}
-                                    <div class="card hand-card {% if '♥' in card or '♦' in card %}red-suit{% endif %} {% if human_is_current and not round_over and not has_pending_bot %}selectable{% endif %}"
-                                        data-hand-index="{{ loop.index0 }}"
-                                    >{{ card }}</div>
-                                {% endfor %}
-                            {% else %}
-                                <span class="empty-hand">No cards</span>
-                            {% endif %}
-                        </div>
-                        <div class="player-info">
-                            <h3 class="player-name">You</h3>
-                            {% if human_is_current and not round_over and not has_pending_bot %}
-                                <span class="turn-badge your-turn">Your turn</span>
-                            {% endif %}
-                        </div>
-                        <div class="player-stats-compact">
-                            <span>{{ human_captured_count }} Captured</span>
-                            <span>{{ human_chkobbas }} Chkobbas</span>
-                            <span>{{ deck_remaining }} Deck</span>
-                        </div>
-                    </div>
-                </section>
-
-                <!-- Control Panel -->
-                {% if human_is_current and not round_over and not has_pending_bot %}
-                    <section class="control-panel">
-                        <div class="selection-info">
-                            <p id="selection-hint">Select a card from your hand</p>
-                        </div>
-                        <form action="{{ url_for('play_selected') }}" method="post" id="play-form">
-                            <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
-                            <input type="hidden" name="hand_index" id="hand-index" value="">
-                            <input type="hidden" name="table_indices" id="table-indices" value="">
-                            <div class="button-group">
-                                <button type="submit" class="btn-primary" id="play-button" disabled>Play Move</button>
-                                <button type="button" class="btn-secondary" id="reset-selection">Reset Selection</button>
-                            </div>
-                        </form>
-                    </section>
-                {% endif %}
-
-                <!-- Move Summary Toast -->
-                {% if last_human_move or last_bot_move %}
-                    <div class="move-summary">
-                        {% if last_human_move %}<div class="move-item you">You {{ last_human_move }}</div>{% endif %}
-                        {% if last_bot_move %}<div class="move-item bot">Bot {{ last_bot_move }}</div>{% endif %}
-                    </div>
-                {% endif %}
-
-                <!-- Debug Panel -->
-                {% if debug and move_buttons and not round_over %}
-                    <section class="debug-panel">
-                        <h4>Legal Moves</h4>
-                        <div class="move-buttons">
-                            {% for btn in move_buttons %}
-                                <form action="{{ url_for('move', move_index=btn.index) }}" method="post" class="inline-form">
-                                    <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
-                                    <button type="submit" class="btn-move">{{ btn.label }}</button>
-                                </form>
-                            {% endfor %}
-                        </div>
-                    </section>
-                {% endif %}
-
-                {% if debug %}
-                    <section class="debug-panel">
-                        <h4>Game State</h4>
-                        <div class="debug-info">
-                            <p><strong>Current player:</strong> {{ debug_data.current_player }}</p>
-                            <p><strong>Deck:</strong> {{ debug_data.deck_count }} cards</p>
-                            <p><strong>Last capturer:</strong> {{ debug_data.last_capturer }}</p>
-                        </div>
-                    </section>
-                {% endif %}
-            </main>
-
-            <!-- Round Over Modal -->
-            {% if show_next_round %}
-                <div class="modal-overlay active">
-                    <div class="modal round-over-modal">
-                        <div class="modal-header">
-                            <h2>Round Complete</h2>
-                        </div>
-                        <div class="modal-body">
-                            <div class="round-score">
-                                <div class="score-item-large">
-                                    <span class="score-value">{{ final_points[0] }}</span>
-                                    <span class="score-label">You</span>
-                                </div>
-                                <span class="score-vs">vs</span>
-                                <div class="score-item-large">
-                                    <span class="score-value">{{ final_points[1] }}</span>
-                                    <span class="score-label">Bot</span>
-                                </div>
-                            </div>
-                            <div class="match-score">
-                                <p>Match: <strong>{{ match_scores[0] }}</strong> — <strong>{{ match_scores[1] }}</strong></p>
-                            </div>
-                            <form action="{{ url_for('next_round') }}" method="post" class="inline-form">
-                                <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
-                                <button type="submit" class="btn-primary btn-large">Next Round</button>
-                            </form>
-                        </div>
-                    </div>
-                </div>
-            {% endif %}
-
-            <!-- Game Over Modal -->
-            {% if match_over %}
-                <div class="modal-overlay active">
-                    <div class="modal game-over-modal">
-                        <div class="modal-header">
-                            <h2>Match Complete</h2>
-                        </div>
-                        <div class="modal-body">
-                            {% if match_winner == 0 %}
-                                <div class="winner-announcement win">
-                                    <div class="winner-emoji">🏆</div>
-                                    <h3>You Win!</h3>
-                                </div>
-                            {% elif match_winner == 1 %}
-                                <div class="winner-announcement lose">
-                                    <div class="winner-emoji">🤖</div>
-                                    <h3>Bot Wins</h3>
-                                </div>
-                            {% else %}
-                                <div class="winner-announcement tie">
-                                    <div class="winner-emoji">🤝</div>
-                                    <h3>Match Tied</h3>
-                                </div>
-                            {% endif %}
-                            <div class="final-score">
-                                <p><strong>{{ match_scores[0] }}</strong> — <strong>{{ match_scores[1] }}</strong></p>
-                            </div>
-                            <form action="{{ url_for('restart') }}" method="post" class="inline-form">
-                                <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
-                                <button type="submit" class="btn-primary btn-large">New Game</button>
-                            </form>
-                        </div>
-                    </div>
-                </div>
-            {% endif %}
-
-            <!-- Toast Container -->
-            <div class="toast-container" id="toast-container"></div>
-
-            <!-- Capture Map Data -->
-            <script type="application/json" id="capture-map-data">
-            {{ capture_map | tojson | safe }}
-            </script>
-
-            <!-- Bot Auto-play Script -->
-            {% if has_pending_bot %}
-                <form action="{{ url_for('commit_bot') }}" method="post" id="commit-bot-form" style="display:none;">
-                    <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
-                </form>
-                <script type="application/json" id="bot-pending-data">
-                {
-                    "is_capture": {{ pending_bot_is_capture | lower }},
-                    "captured_indices": {{ pending_bot_captured_indices | tojson | safe }},
-                    "bot_card": {{ pending_bot_played_card | tojson | safe }}
-                }
-                </script>
-                <script>
-                (function() {
-                    var raw = document.getElementById('bot-pending-data');
-                    if (!raw) return;
-                    var data = JSON.parse(raw.textContent);
-
-                    // Phase 1: bot card is visible near hand (CSS handles appear)
-
-                    // Phase 2 at 1000ms: bot card disappears, then yellow phase
-                    setTimeout(function() {
-                        var botCard = document.querySelector('.bot-capture-card');
-                        if (botCard) {
-                            botCard.style.transition = 'opacity 0.2s, transform 0.2s';
-                            botCard.style.opacity = '0';
-                            botCard.style.transform = 'scale(0.8)';
-                        }
-
-                        // For captures, do not leave intermediate table highlights.
-                        // The next render after /commit_bot reflects the real table state.
-                    }, 1000);
-
-                    // Phase 3 at 1500ms: submit to commit the move
-                    setTimeout(function() {
-                        document.getElementById('commit-bot-form').submit();
-                    }, 1500);
-                })();
-                </script>
-            {% endif %}
-
-            <!-- Main Game Script -->
-            <script>
-            (function() {
-                const raw = document.getElementById('capture-map-data');
-                if (!raw) return;
-
-                const CAPTURE_MAP = JSON.parse(raw.textContent || '{}');
-                const handCards = document.querySelectorAll('#hand-cards .card.selectable');
-                const tableCards = document.querySelectorAll('#table-cards .card.selectable');
-                const handInput = document.getElementById('hand-index');
-                const tableInput = document.getElementById('table-indices');
-                const playButton = document.getElementById('play-button');
-                const resetButton = document.getElementById('reset-selection');
-                const hint = document.getElementById('selection-hint');
-
-                if (!handInput || !tableInput || !playButton) return;
-
-                let selectedHandIndex = null;
-                let selectedTableIndices = new Set();
-                let validSelection = false;
-
-                function arraysEqual(a, b) {
-                    if (a.length !== b.length) return false;
-                    const sa = a.slice().sort((x, y) => x - y);
-                    const sb = b.slice().sort((x, y) => x - y);
-                    return sa.every((v, i) => v === sb[i]);
-                }
-
-                function clearHighlights() {
-                    handCards.forEach(c => c.classList.remove('selected'));
-                    tableCards.forEach(c => {
-                        c.classList.remove('highlighted', 'valid-capture', 'selected');
-                    });
-                }
-
-                function setHint(text) {
-                    if (!hint) return;
-                    hint.textContent = text;
-                }
-
-                function resetSelection() {
-                    selectedHandIndex = null;
-                    selectedTableIndices.clear();
-                    validSelection = false;
-                    handInput.value = '';
-                    tableInput.value = '';
-                    playButton.disabled = true;
-                    clearHighlights();
-                    setHint('Select a card from your hand');
-                }
-
-                function updateForm() {
-                    handInput.value = selectedHandIndex ?? '';
-                    tableInput.value = Array.from(selectedTableIndices).join(',');
-                    playButton.disabled = !validSelection;
-                }
-
-                function highlightCapturable(captureOptions) {
-                    const allIndices = new Set();
-                    captureOptions.forEach(opt => {
-                        opt.table_indices.forEach(i => allIndices.add(String(i)));
-                    });
-                    tableCards.forEach(card => {
-                        if (allIndices.has(card.dataset.tableIndex)) {
-                            card.classList.add('highlighted', 'valid-capture');
-                        }
-                    });
-                }
-
-                function findMatchingCapture(handIdx, tableIdxs) {
-                    const options = CAPTURE_MAP[handIdx];
-                    if (!options) return null;
-                    const sorted = tableIdxs.slice().sort((a, b) => a - b);
-                    for (const opt of options) {
-                        if (arraysEqual(opt.table_indices, sorted)) return opt;
-                    }
-                    return null;
-                }
-
-                function refreshValidity() {
-                    if (selectedHandIndex === null) {
-                        validSelection = false;
-                        updateForm();
-                        return;
-                    }
-
-                    const selectedArr = Array.from(selectedTableIndices);
-                    const match = findMatchingCapture(selectedHandIndex, selectedArr);
-                    validSelection = Boolean(match);
-                    updateForm();
-
-                    if (validSelection) {
-                        if (selectedArr.length === 0) {
-                            setHint('Click "Play Move" to place card on table');
-                        } else {
-                            setHint('Valid capture - ready to play!');
-                        }
-                    } else {
-                        if (selectedArr.length === 0) {
-                            setHint('Select table cards to capture');
-                        } else {
-                            setHint('Invalid capture selection');
-                        }
-                    }
-                }
-
-                handCards.forEach(card => {
-                    card.addEventListener('click', function() {
-                        const idx = this.dataset.handIndex;
-                        resetSelection();
-                        selectedHandIndex = idx;
-                        this.classList.add('selected');
-
-                        const options = CAPTURE_MAP[idx] || [];
-                        const captureOptions = options.filter(o => o.is_capture);
-
-                        if (captureOptions.length === 0) {
-                            // If this specific card has no capture options, play it to table.
-                            validSelection = true;
-                            selectedTableIndices.clear();
-                            updateForm();
-                            setHint('Playing this card to the table...');
-                            setTimeout(function() {
-                                document.getElementById('play-form').submit();
-                            }, 150);
-                            return;
-                        } else {
-                            highlightCapturable(captureOptions);
-                            setHint('Select table cards to capture');
-                        }
-                        refreshValidity();
-                    });
-                });
-
-                tableCards.forEach(card => {
-                    card.addEventListener('click', function() {
-                        if (selectedHandIndex === null) {
-                            setHint('Choose a card from your hand first');
-                            return;
-                        }
-                        if (!this.classList.contains('valid-capture')) {
-                            setHint('That card is not part of a valid capture');
-                            return;
-                        }
-
-                        const intIdx = parseInt(this.dataset.tableIndex, 10);
-                        if (selectedTableIndices.has(intIdx)) {
-                            selectedTableIndices.delete(intIdx);
-                            this.classList.remove('selected');
-                        } else {
-                            selectedTableIndices.add(intIdx);
-                            this.classList.add('selected');
-                        }
-                        refreshValidity();
-
-                        if (validSelection) {
-                            setHint('Playing move...');
-                            setTimeout(function() {
-                                document.getElementById('play-form').submit();
-                            }, 150);
-                        }
-                    });
-                });
-
-                if (resetButton) resetButton.addEventListener('click', resetSelection);
-            })();
-            </script>
-        {% endif %}
     </div>
+</main>
+
+{% else %}
+<!-- ════════════════ GAME BOARD ════════════════ -->
+<div class="board{% if human_is_current and not round_over and not has_pending_bot %} player-active{% elif not round_over and not has_pending_bot and not human_is_current %} bot-active{% elif has_pending_bot %} bot-active{% endif %}">
+
+    <!-- ── Opponent Zone ── -->
+    <div class="zone opp-zone">
+        <div class="zone-meta">
+            <span class="zone-name opp-name">
+                <span class="bot-mood" title="Bot mood">{{ bot_mood }}</span>
+                {{ bot_name }}
+            </span>
+            <span class="zone-stats">
+                {{ bot_captured_count }} captured &nbsp;·&nbsp;
+                <span class="chk-star">{{ bot_chkobbas }}✦</span>
+            </span>
+            <span class="zone-status">
+                {% if not human_is_current and not round_over and not has_pending_bot %}
+                    <span class="badge thinking">Thinking…</span>
+                {% elif has_pending_bot %}
+                    <span class="badge thinking">Playing…</span>
+                {% endif %}
+            </span>
+        </div>
+        <div class="zone-cards" id="bot-cards">
+            {% for _ in range(bot_hand_count) %}<div class="card card-back"></div>{% endfor %}
+            {% if has_pending_bot %}
+                <div class="card bot-capture-card {% if '♥' in pending_bot_played_card or '♦' in pending_bot_played_card %}red-suit{% endif %}">{{ pending_bot_played_card }}</div>
+            {% endif %}
+            {% if bot_hand_count == 0 and not has_pending_bot %}<span class="zone-empty">No cards</span>{% endif %}
+        </div>
+    </div>
+
+    <!-- ── Felt Table (only table cards) ── -->
+    <div class="felt">
+        <span class="felt-label">Table</span>
+        <!-- Brand watermark — rendered behind the cards via z-index -->
+        <div class="felt-logo" aria-hidden="true"></div>
+        <div class="felt-cards" id="table-cards">
+            {% if table_slots and (table_slots | map(attribute='card') | select | list) %}
+                {% for slot in table_slots %}
+                    {% if slot.card %}
+                    <div class="card table-card {% if '♥' in slot.card or '♦' in slot.card %}red-suit{% endif %}{% if human_is_current and not round_over and not has_pending_bot %} selectable{% endif %}{% if loop.index0 == last_human_played_table_index %} human-played{% endif %}{% if slot.card == last_played_card and last_played_by == 'human' %} fly-from-human{% endif %}{% if slot.card == last_played_card and last_played_by == 'bot' %} fly-from-bot{% endif %}"
+                        data-table-index="{{ slot.table_index }}"
+                        data-card-str="{{ slot.card }}">{{ slot.card }}</div>
+                    {% else %}
+                    <div class="card table-slot-empty" aria-hidden="true"></div>
+                    {% endif %}
+                {% endfor %}
+            {% else %}
+                <p class="felt-empty">No cards on table</p>
+            {% endif %}
+        </div>
+        <div class="deck-badge" aria-label="{{ deck_remaining }} cards in deck">
+            {% if deck_remaining > 0 %}
+            <div class="deck-stack" aria-hidden="true">
+                <div class="card card-back pile-card"></div>
+                <div class="card card-back pile-card"></div>
+                <div class="card card-back pile-card"></div>
+            </div>
+            {% endif %}
+            <span class="deck-count">{{ deck_remaining }}</span>
+        </div>
+    </div>
+
+    <!-- ── Player Zone ── -->
+    <div class="zone player-zone{% if human_is_current and not round_over and not has_pending_bot %} your-turn{% endif %}">
+        <div class="zone-cards" id="hand-cards">
+            {% if human_hand %}
+                {% for card in human_hand %}
+                <div class="card hand-card {% if '♥' in card or '♦' in card %}red-suit{% endif %}{% if human_is_current and not round_over and not has_pending_bot %} selectable{% endif %}"
+                    data-hand-index="{{ loop.index0 }}">{{ card }}</div>
+                {% endfor %}
+            {% else %}
+                <span class="zone-empty">No cards</span>
+            {% endif %}
+        </div>
+        <div class="zone-meta zone-meta-bottom">
+            <span class="zone-stats">
+                {{ human_captured_count }} captured &nbsp;·&nbsp;
+                <span class="chk-star">{{ human_chkobbas }}✦</span>
+            </span>
+            <span class="zone-name player-name">
+                <span class="avatar-dot" style="background:{{ avatar_color }}">{{ avatar_initial }}</span>
+                <span id="zone-display-name">{{ display_name }}</span>
+            </span>
+            <span class="zone-status">
+                {% if human_is_current and not round_over and not has_pending_bot %}
+                    <span class="badge your-turn-badge">Your turn</span>
+                {% endif %}
+            </span>
+        </div>
+    </div>
+
+</div><!-- /board -->
+
+<!-- ── Hint Bar ── -->
+{% if not round_over and not match_over %}
+<div class="hint-bar">
+    <p id="selection-hint" class="hint-txt">
+        {%- if has_pending_bot -%}
+            Bot is playing…
+        {%- elif not human_is_current -%}
+            Bot is thinking…
+        {%- else -%}
+            Tap a card from your hand to play
+        {%- endif -%}
+    </p>
+    <form action="{{ url_for('play_selected') }}" method="post" id="play-form" class="hint-form"
+          style="{{ '' if human_is_current and not has_pending_bot else 'display:none' }}">
+        <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="hand_index" id="hand-index" value="">
+        <input type="hidden" name="table_indices" id="table-indices" value="">
+        <button type="submit" class="btn-play" id="play-button" disabled>Play</button>
+        <button type="button" class="btn-reset-sel" id="reset-selection">✕</button>
+    </form>
+</div>
+{% endif %}
+
+<!-- ── Move Log ── -->
+{% if last_human_move or last_bot_move %}
+<div class="move-log">
+    {% if last_human_move %}<span class="log-you">You {{ last_human_move }}</span>{% endif %}
+    {% if last_bot_move %}<span class="log-bot">Bot {{ last_bot_move }}</span>{% endif %}
+</div>
+{% endif %}
+
+<!-- ── Debug ── -->
+{% if debug and move_buttons and not round_over %}
+<section class="debug-panel">
+    <h4>Legal Moves</h4>
+    <div class="dbg-btns">
+        {% for btn in move_buttons %}
+        <form action="{{ url_for('move', move_index=btn.index) }}" method="post" class="inl">
+            <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+            <button class="btn-dbg">{{ btn.label }}</button>
+        </form>
+        {% endfor %}
+    </div>
+</section>
+{% endif %}
+{% if debug %}
+<section class="debug-panel">
+    <h4>State</h4>
+    <p class="dbg-info">Player: {{ debug_data.current_player }} | Deck: {{ debug_data.deck_count }} | Last cap: {{ debug_data.last_capturer }}</p>
+</section>
+{% endif %}
+
+<!-- ════ Round Over — Notebook Scorecard ════ -->
+{% if show_next_round %}
+<div class="notebook-overlay">
+    <div class="notebook-card">
+
+        <div class="nb-title">أرقم! — Chkobba</div>
+        <div class="nb-subtitle">round results</div>
+
+        <div class="nb-columns">
+            <span>You</span>
+            <span>{{ bot_name }}</span>
+        </div>
+
+        {% for row in round_breakdown %}
+        <div class="nb-row">
+            <span class="nb-label">{{ row.label }}</span>
+            <span class="nb-score{% if row.you == 0 %} zero{% endif %}">
+                {{- '+' + row.you|string if row.you > 0 else ('—' if row.you == 0 else row.you|string) -}}
+            </span>
+            <span class="nb-score nb-score-right{% if row.bot == 0 %} zero{% endif %}">
+                {{- '+' + row.bot|string if row.bot > 0 else ('—' if row.bot == 0 else row.bot|string) -}}
+            </span>
+        </div>
+        {% endfor %}
+
+        <div class="nb-divider"></div>
+
+        <div class="nb-total-row">
+            <span class="nb-total-label">Total</span>
+            <span class="nb-total-score">{{ final_points[0] }}</span>
+            <span class="nb-total-score nb-total-right">{{ final_points[1] }}</span>
+        </div>
+
+        <p class="nb-match">Match running total: {{ match_scores[0] }} – {{ match_scores[1] }}</p>
+
+        <div class="nb-continue">
+            <form action="{{ url_for('next_round') }}" method="post" class="inl">
+                <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+                <button class="btn-stamp">Next Round →</button>
+            </form>
+        </div>
+
+    </div>
+</div>
+{% endif %}
+
+<!-- ════ Match Over Modal ════ -->
+{% if match_over %}
+<div class="overlay active">
+    <div class="modal">
+        {% if match_winner == 0 %}
+            <div class="modal-icon">🏆</div>
+            <h2 class="modal-title winner">You Win!</h2>
+        {% elif match_winner == 1 %}
+            <div class="modal-icon">🤖</div>
+            <h2 class="modal-title loser">Bot Wins</h2>
+        {% else %}
+            <div class="modal-icon">🤝</div>
+            <h2 class="modal-title">It's a Tie</h2>
+        {% endif %}
+        <p class="modal-final">{{ match_scores[0] }} – {{ match_scores[1] }}</p>
+        <form action="{{ url_for('restart') }}" method="post" class="inl">
+            <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+            <button class="btn-deal">Play Again</button>
+        </form>
+    </div>
+</div>
+{% endif %}
+
+<!-- ════ Data + Scripts ════ -->
+<script type="application/json" id="capture-map-data">{{ capture_map | tojson | safe }}</script>
+{% if not show_start_screen %}
+<script type="application/json" id="page-state">{{ {
+    "show_start_screen":            false,
+    "has_pending_bot":              has_pending_bot,
+    "human_is_current":             human_is_current,
+    "capture_map":                  capture_map,
+    "pending_bot_played_card":      pending_bot_played_card,
+    "pending_bot_is_capture":       pending_bot_is_capture,
+    "pending_bot_captured_indices": pending_bot_captured_indices,
+    "pending_bot_is_chkobba":       pending_bot_is_chkobba,
+    "round_over":                   round_over,
+    "match_over":                   match_over,
+    "human_hand":                   human_hand,
+    "table_slots":                  table_slots,
+    "human_captured_count":         human_captured_count,
+    "human_chkobbas":               human_chkobbas,
+    "bot_hand_count":               bot_hand_count,
+    "bot_captured_count":           bot_captured_count,
+    "bot_chkobbas":                 bot_chkobbas,
+    "deck_remaining":               deck_remaining,
+    "match_scores":                 match_scores,
+    "bot_mood":                     bot_mood,
+    "bot_name":                     bot_name,
+    "last_played_card":             last_played_card,
+    "last_played_by":               last_played_by,
+    "room_id":                      room_id,
+    "my_seat":                      my_seat,
+    "game_mode":                    "solo",
+    "display_name":                 display_name,
+    "avatar_initial":               avatar_initial,
+    "avatar_color":                 avatar_color
+} | tojson | safe }}</script>
+{% endif %}
+
+{% endif %}{# /show_start_screen else #}
+
+<!-- ════ Card enhancer: "7♦" → real corner layout ════ -->
+<script>
+(function(){
+    function enhance(el){
+        var t=el.textContent.trim();
+        if(!t||el.classList.contains('card-back')||el.classList.contains('table-slot-empty'))return;
+        var suit=t.slice(-1),rank=t.slice(0,-1);
+        if(!rank)return;
+        el.innerHTML='<span class="c-tl">'+rank+'<br>'+suit+'</span>'
+                    +'<span class="c-ctr">'+suit+'</span>'
+                    +'<span class="c-br">'+rank+'<br>'+suit+'</span>';
+    }
+    document.querySelectorAll('.card:not(.card-back):not(.table-slot-empty)').forEach(enhance);
+    document.querySelectorAll('.prev-card').forEach(enhance);
+})();
+</script>
+
+<!-- ════ Initial scatter on server-rendered table cards ════ -->
+<script>
+(function(){
+    var rng = function(a,b){ return Math.random()*(b-a)+a; };
+    var idx = 0;
+    document.querySelectorAll('#table-cards .table-card').forEach(function(card){
+        var topRow = (idx % 2 === 0); idx++;
+        if(card.classList.contains('table-slot-empty')) return;
+        var yBias = topRow ? -6 : 6;
+        card.style.setProperty('--rx', rng(-7,7).toFixed(1)+'deg');
+        card.style.setProperty('--tx', rng(-9,9).toFixed(1)+'px');
+        card.style.setProperty('--ty', (yBias+rng(-4,4)).toFixed(1)+'px');
+    });
+})();
+</script>
+
+<!-- ════ Chkobba sweep animation ════ -->
+<script>
+(function(){
+    var GOLD_COLORS = ['#d4af37','#f0d060','#ffe94d','#c9972a','#ffd700'];
+
+    function spawnParticles(cx, cy){
+        for(var i = 0; i < 32; i++){
+            (function(){
+                var p = document.createElement('div');
+                p.className = 'chk-particle';
+                var size = 3 + Math.random() * 7;
+                var angle = Math.random() * Math.PI * 2;
+                var speed = 55 + Math.random() * 130;
+                var vx = Math.cos(angle) * speed;
+                var vy = Math.sin(angle) * speed - 55; // slight upward bias
+                var col = GOLD_COLORS[Math.floor(Math.random() * GOLD_COLORS.length)];
+                var dur = 700 + Math.random() * 500;
+                p.style.cssText = 'width:'+size+'px;height:'+size+'px;background:'+col+';';
+                document.body.appendChild(p);
+                var start = null;
+                function step(t){
+                    if(!start) start = t;
+                    var dt = t - start;
+                    if(dt >= dur){ if(p.parentNode) p.parentNode.removeChild(p); return; }
+                    var f = dt / dur;
+                    var x = cx + vx * (dt/1000);
+                    var y = cy + vy * (dt/1000) + 0.5 * 320 * (dt/1000) * (dt/1000);
+                    p.style.left = x + 'px'; p.style.top = y + 'px';
+                    p.style.opacity = 1 - f;
+                    requestAnimationFrame(step);
+                }
+                requestAnimationFrame(step);
+            })();
+        }
+    }
+
+    function showChkobbaText(cx, cy){
+        var el = document.createElement('div');
+        el.className = 'chkobba-text';
+        el.textContent = 'CHKOBBA!';
+        el.style.left = cx + 'px';
+        el.style.top  = cy + 'px';
+        document.body.appendChild(el);
+        requestAnimationFrame(function(){
+            requestAnimationFrame(function(){
+                el.style.transition = 'transform 200ms cubic-bezier(.2,1.5,.4,1)';
+                el.style.transform  = 'translate(-50%,-50%) scale(1)';
+                setTimeout(function(){
+                    el.style.transition = 'opacity 300ms ease';
+                    el.style.opacity = '0';
+                    setTimeout(function(){ if(el.parentNode) el.parentNode.removeChild(el); }, 310);
+                }, 600); // hold 600 ms then fade
+            });
+        });
+    }
+
+    function playTakSound(){
+        try {
+            var a = new Audio('/static/sounds/tak.mp3');
+            a.volume = 0.5;
+            a.play().catch(function(){});
+        } catch(e){}
+    }
+
+    window.chkobbaAnimation = function(centerEl, onComplete){
+        // centerEl can be a DOM element or a plain {left,top,width,height} rect
+        var r = (typeof centerEl.getBoundingClientRect === 'function')
+                ? centerEl.getBoundingClientRect()
+                : centerEl;
+        var cx = r.left + r.width  / 2;
+        var cy = r.top  + r.height / 2;
+
+        // 1. Felt glow
+        var felt = document.querySelector('.felt');
+        if(felt){
+            felt.classList.add('chkobba-flash');
+            setTimeout(function(){ felt.classList.remove('chkobba-flash'); }, 500);
+        }
+        // 2. Particles
+        spawnParticles(cx, cy);
+        // 3. Text
+        showChkobbaText(cx, cy);
+        // 4. Sound
+        playTakSound();
+        // 5. Done after ~1.2 s
+        setTimeout(onComplete, 1200);
+    };
+})();
+</script>
+
+
+
+<!-- ════ AJAX Game Engine ════ -->
+<script>
+(function(){
+'use strict';
+
+var EASE = 'cubic-bezier(0.22,1,0.36,1)';
+var CSRF = (document.querySelector('meta[name="csrf-token"]') || {}).getAttribute('content') || '';
+var _busy  = false;
+var _state = null; // authoritative game-state cache; kept in sync with every server response
+
+// ── Client-side state prediction ─────────────────────────────────────────
+// Mirrors _place_card_in_slots() in app.py (human→odd rows, bot→even rows).
+function _placeOptimistic(slots, card, isHuman){
+    var par = isHuman ? 1 : 0;
+    for(var i=0;i<slots.length;i++){
+        if(slots[i].card===null && i%2===par){
+            slots[i]={card:card, table_index:null}; return;
+        }
+    }
+    if(slots.length%2!==par) slots.push({card:null,table_index:null});
+    slots.push({card:card,table_index:null});
+}
+
+// Build a predicted copy of _state after the human plays handIdx → tableIdxs.
+// Does NOT set has_pending_bot=true so applyState() won't fire scheduleBotTurn()
+// prematurely (bot card is unknown until server responds).
+function predictPlay(state, handIdx, tableIdxs){
+    var playedCard = state.human_hand[handIdx];
+    var isCapture  = tableIdxs && tableIdxs.length > 0;
+    var pred = {
+        show_start_screen: false,
+        round_over: false, match_over: false,
+        human_is_current: false, has_pending_bot: false,
+        pending_bot_played_card: null, pending_bot_is_capture: false,
+        pending_bot_captured_indices: [], pending_bot_is_chkobba: false,
+        match_scores:       state.match_scores ? state.match_scores.slice() : [0,0],
+        bot_mood:           state.bot_mood  || '😐',
+        bot_name:           state.bot_name  || 'Bot',
+        bot_hand_count:     state.bot_hand_count,
+        bot_captured_count: state.bot_captured_count,
+        bot_chkobbas:       state.bot_chkobbas,
+        human_chkobbas:     state.human_chkobbas,
+        deck_remaining:     state.deck_remaining,
+        capture_map:        {}, commentary_toast: null,
+        last_played_card:   playedCard, last_played_by: 'human',
+        human_hand:  state.human_hand.filter(function(_,i){return i!==handIdx;}),
+        table_slots: state.table_slots.map(function(s){return {card:s.card, table_index:s.table_index};}),
+        human_captured_count: state.human_captured_count
+    };
+    if(isCapture){
+        tableIdxs.forEach(function(ti){
+            for(var i=0;i<pred.table_slots.length;i++){
+                if(pred.table_slots[i].table_index===ti && pred.table_slots[i].card!==null){
+                    pred.table_slots[i]={card:null,table_index:null}; break;
+                }
+            }
+        });
+        pred.human_captured_count += tableIdxs.length + 1; // captured + played card
+        var rem = pred.table_slots.filter(function(s){return s.card!==null;});
+        if(rem.length===0) pred.human_chkobbas++; // chkobba
+    } else {
+        _placeOptimistic(pred.table_slots, playedCard, true);
+    }
+    return pred;
+}
+
+// Returns true when the predicted hand/table/score match the server state
+// closely enough that no DOM correction is needed.
+function statesMatch(pred, srv){
+    var ph = pred.human_hand.slice().sort(), sh = (srv.human_hand||[]).slice().sort();
+    if(ph.join()!==sh.join()) return false;
+    if(pred.human_captured_count !== srv.human_captured_count) return false;
+    if(pred.human_chkobbas       !== srv.human_chkobbas)       return false;
+    var pt = pred.table_slots.filter(function(s){return s.card;}).map(function(s){return s.card;}).sort();
+    var st = (srv.table_slots||[]).filter(function(s){return s.card;}).map(function(s){return s.card;}).sort();
+    if(pt.join()!==st.join()) return false;
+    return true;
+}
+
+// Brief fade-flash on affected zones, then re-render from server state.
+function reconcile(serverState){
+    var sels = ['#hand-cards','#table-cards','.player-zone .zone-stats'];
+    var els  = sels.map(function(s){return document.querySelector(s);}).filter(Boolean);
+    els.forEach(function(el){el.style.transition='opacity .2s';el.style.opacity='0.5';});
+    setTimeout(function(){
+        els.forEach(function(el){el.style.opacity='';el.style.transition='';});
+        applyState(serverState, null);
+    }, 200);
+}
+
+// Called when server confirms the prediction matched.
+// Only updates the parts the client couldn't predict (bot card, commentary).
+function onServerConfirm(serverState){
+    if(serverState.commentary_toast && window.showCommentaryToast)
+        window.showCommentaryToast(serverState.commentary_toast);
+    if(!serverState.has_pending_bot) return;
+
+    // Reveal bot card in bot zone
+    var bc = document.getElementById('bot-cards');
+    if(bc){
+        bc.innerHTML = buildBotHand(serverState.bot_hand_count, true, serverState.pending_bot_played_card);
+        var bcc = bc.querySelector('.bot-capture-card'); if(bcc) enhance(bcc);
+    }
+    var hint = document.getElementById('selection-hint');
+    if(hint) hint.textContent = 'Bot is playing\u2026';
+    var bSt = document.querySelector('.opp-zone .zone-status');
+    if(bSt) bSt.innerHTML = '<span class="badge thinking">Playing\u2026</span>';
+
+    scheduleBotTurn(serverState);
+}
+
+// ── Syncing indicator ─────────────────────────────────────────────────────
+var _dot = document.getElementById('syncing-dot');
+function showSync(){ if(_dot) _dot.classList.add('active'); }
+function hideSync(){ if(_dot) _dot.classList.remove('active'); }
+
+// ── Helpers ───────────────────────────────────────────────────────────────
+function isRed(card){ return card && (card.indexOf('♥')>=0 || card.indexOf('♦')>=0); }
+function rectObj(r){ return {left:r.left, top:r.top, width:r.width, height:r.height}; }
+
+function enhance(el){
+    var t=el.textContent.trim();
+    if(!t||el.classList.contains('card-back')||el.classList.contains('table-slot-empty'))return;
+    var suit=t.slice(-1), rank=t.slice(0,-1);
+    if(!rank)return;
+    el.innerHTML='<span class="c-tl">'+rank+'<br>'+suit+'</span>'
+               +'<span class="c-ctr">'+suit+'</span>'
+               +'<span class="c-br">'+rank+'<br>'+suit+'</span>';
+}
+
+// ── API ───────────────────────────────────────────────────────────────────
+function apiPost(url, data){
+    if(_busy) return Promise.reject('busy');
+    _busy = true; showSync();
+    var fd = new FormData();
+    fd.append('_csrf_token', CSRF);
+    for(var k in data) fd.append(k, data[k]);
+    return fetch(url, {method:'POST', body:fd})
+        .then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); })
+        .finally(function(){ _busy=false; hideSync(); });
+}
+
+// ── HTML builders ─────────────────────────────────────────────────────────
+function buildHand(cards, sel){
+    if(!cards||!cards.length) return '<span class="zone-empty">No cards</span>';
+    return cards.map(function(c,i){
+        return '<div class="card hand-card'+(isRed(c)?' red-suit':'')+(sel?' selectable':'')+
+               '" data-hand-index="'+i+'">'+c+'</div>';
+    }).join('');
+}
+
+function buildTable(slots, sel, lastCard, lastBy){
+    if(!slots) return '<p class="felt-empty">No cards on table</p>';
+    var hasSome = slots.some(function(s){return s.card;});
+    if(!hasSome) return '<p class="felt-empty">No cards on table</p>';
+    return slots.map(function(slot){
+        if(!slot.card) return '<div class="card table-slot-empty" aria-hidden="true"></div>';
+        var fly = (slot.card===lastCard && lastBy==='human') ? ' fly-from-human'
+                : (slot.card===lastCard && lastBy==='bot')   ? ' fly-from-bot' : '';
+        var ti = (slot.table_index!==null&&slot.table_index!==undefined) ? slot.table_index : '';
+        return '<div class="card table-card'+(isRed(slot.card)?' red-suit':'')+(sel?' selectable':'')+fly+
+               '" data-table-index="'+ti+'" data-card-str="'+slot.card+'">'+slot.card+'</div>';
+    }).join('');
+}
+
+function buildBotHand(count, hasPending, pendingCard){
+    var h='';
+    for(var i=0;i<count;i++) h+='<div class="card card-back"></div>';
+    if(hasPending&&pendingCard)
+        h+='<div class="card bot-capture-card'+(isRed(pendingCard)?' red-suit':'')+
+           '">'+pendingCard+'</div>';
+    if(!count&&!hasPending) h+='<span class="zone-empty">No cards</span>';
+    return h;
+}
+
+// ── Scatter + FLIP on the table container ─────────────────────────────────
+function scatterAndFlip(container, snap){
+    var rng=function(a,b){return Math.random()*(b-a)+a;};
+    var cards=Array.from(container.querySelectorAll('.table-card'));
+    var idx=0;
+    cards.forEach(function(c){
+        var top=(idx%2===0); idx++;
+        if(c.classList.contains('table-slot-empty')) return;
+        var yb=top?-6:6;
+        c.style.setProperty('--rx',rng(-7,7).toFixed(1)+'deg');
+        c.style.setProperty('--tx',rng(-9,9).toFixed(1)+'px');
+        c.style.setProperty('--ty',(yb+rng(-4,4)).toFixed(1)+'px');
+    });
+
+    if(!snap) return;
+    var newCard=container.querySelector('.fly-from-human,.fly-from-bot');
+    var fromBot=newCard&&newCard.classList.contains('fly-from-bot');
+    var fromRect=fromBot?snap.bot:snap.played;
+    var toAnim=[];
+
+    cards.forEach(function(c){
+        if(c.classList.contains('table-slot-empty')) return;
+        var isNew=(c===newCard);
+        var old=isNew?fromRect:(snap.table&&snap.table[c.dataset.cardStr]);
+        if(!old) return;
+        var nr=c.getBoundingClientRect();
+        var dx=(old.left+old.width/2)-(nr.left+nr.width/2);
+        var dy=(old.top+old.height/2)-(nr.top+nr.height/2);
+        if(!isNew&&Math.abs(dx)<1.5&&Math.abs(dy)<1.5) return;
+        var rx=c.style.getPropertyValue('--rx')||'0deg';
+        var tx=c.style.getPropertyValue('--tx')||'0px';
+        var ty=c.style.getPropertyValue('--ty')||'0px';
+        c.style.animation='none'; c.style.transition='none';
+        c.style.zIndex=isNew?'50':'20';
+        c.style.transform='rotate('+rx+') translate('+tx+','+ty+')'+
+                          ' translate('+dx.toFixed(1)+'px,'+dy.toFixed(1)+'px)'+
+                          (isNew?' scale(1.05)':'');
+        toAnim.push({el:c,isNew:isNew});
+    });
+
+    if(!toAnim.length) return;
+    requestAnimationFrame(function(){
+        requestAnimationFrame(function(){
+            toAnim.forEach(function(it){
+                it.el.style.transition='transform 400ms '+EASE+(it.isNew?', box-shadow 400ms ease':'');
+                it.el.style.transform='';
+                if(it.isNew) it.el.style.boxShadow='0 18px 36px rgba(0,0,0,.55)';
+                setTimeout(function(){
+                    it.el.style.zIndex=''; it.el.style.transition=''; it.el.style.animation='';
+                    if(it.isNew) it.el.style.boxShadow='';
+                }, 420);
+            });
+        });
+    });
+}
+
+// ── Snapshot card positions ───────────────────────────────────────────────
+function takeSnap(fromEl, isBot){
+    var snap={played:null, bot:null, table:{}};
+    if(fromEl){
+        var r=rectObj(fromEl.getBoundingClientRect());
+        if(isBot) snap.bot=r; else snap.played=r;
+    }
+    var tc=document.getElementById('table-cards');
+    if(tc) tc.querySelectorAll('.table-card:not(.table-slot-empty)').forEach(function(el){
+        var cs=el.dataset.cardStr; if(cs) snap.table[cs]=rectObj(el.getBoundingClientRect());
+    });
+    return snap;
+}
+
+// ── Apply full JSON state to the DOM ─────────────────────────────────────
+function applyState(st, snap){
+    if(!st||st.show_start_screen){ window.location.reload(); return; }
+
+    // Round / match over → reload so Jinja2 renders the scorecard / modal
+    if(st.round_over||st.match_over){ window.location.reload(); return; }
+
+    var human = !!(st.human_is_current && !st.round_over && !st.has_pending_bot);
+
+    // Board classes
+    var board=document.querySelector('.board');
+    if(board){ board.classList.toggle('player-active',human); board.classList.toggle('bot-active',!human); }
+
+    // HUD match scores
+    var hudY=document.querySelector('.hud-score.you .hs-val');
+    var hudB=document.querySelector('.hud-score.bot .hs-val');
+    if(hudY) hudY.textContent=st.match_scores[0];
+    if(hudB) hudB.textContent=st.match_scores[1];
+
+    // Bot mood + stats + status badge
+    var moodEl=document.querySelector('.bot-mood');
+    if(moodEl) moodEl.textContent=st.bot_mood;
+    var bStats=document.querySelector('.opp-zone .zone-stats');
+    if(bStats) bStats.innerHTML=st.bot_captured_count+' captured &nbsp;·&nbsp;<span class="chk-star">'+st.bot_chkobbas+'✦</span>';
+    var bStatus=document.querySelector('.opp-zone .zone-status');
+    if(bStatus) bStatus.innerHTML=st.has_pending_bot?'<span class="badge thinking">Playing…</span>':
+                                  (!st.human_is_current?'<span class="badge thinking">Thinking…</span>':'');
+
+    // Deck badge
+    var dCount=document.querySelector('.deck-count');
+    if(dCount) dCount.textContent=st.deck_remaining;
+    var dStack=document.querySelector('.deck-stack');
+    if(dStack) dStack.style.display=st.deck_remaining>0?'':'none';
+
+    // Player zone classes + stats + badge
+    var pZone=document.querySelector('.player-zone');
+    if(pZone) pZone.classList.toggle('your-turn',human);
+    var pStats=document.querySelector('.player-zone .zone-stats');
+    if(pStats) pStats.innerHTML=st.human_captured_count+' captured &nbsp;·&nbsp;<span class="chk-star">'+st.human_chkobbas+'✦</span>';
+    var pStatus=document.querySelector('.player-zone .zone-status');
+    if(pStatus) pStatus.innerHTML=human?'<span class="badge your-turn-badge">Your turn</span>':'';
+
+    // Hint bar
+    var hint=document.getElementById('selection-hint');
+    if(hint) hint.textContent=st.has_pending_bot?'Bot is playing…':
+                              (!st.human_is_current?'Bot is thinking…':'Tap a card from your hand to play');
+    var playForm=document.getElementById('play-form');
+    if(playForm) playForm.style.display=human?'':'none';
+
+    // Table cards: rebuild, scatter, FLIP
+    var tc=document.getElementById('table-cards');
+    if(tc){
+        tc.innerHTML=buildTable(st.table_slots,human,st.last_played_card,st.last_played_by);
+        tc.querySelectorAll('.table-card:not(.table-slot-empty)').forEach(enhance);
+        scatterAndFlip(tc, snap);
+    }
+
+    // Hand cards
+    var hc=document.getElementById('hand-cards');
+    if(hc){
+        hc.innerHTML=buildHand(st.human_hand, human);
+        hc.querySelectorAll('.card').forEach(enhance);
+    }
+
+    // Bot hand
+    var bc=document.getElementById('bot-cards');
+    if(bc){
+        bc.innerHTML=buildBotHand(st.bot_hand_count, st.has_pending_bot, st.pending_bot_played_card);
+        if(st.has_pending_bot&&st.pending_bot_played_card){
+            var bcc=bc.querySelector('.bot-capture-card'); if(bcc) enhance(bcc);
+        }
+    }
+
+    // Commentary toast
+    if(st.commentary_toast && window.showCommentaryToast) window.showCommentaryToast(st.commentary_toast);
+
+    // Next step: bot turn or attach human listeners
+    // When socket is connected, the server drives the bot via background task.
+    if(st.has_pending_bot){
+        if(!(window.Game && window.Game.socket && window.Game.socket.connected))
+            scheduleBotTurn(st); // AJAX fallback only
+    } else if(human) {
+        attachListeners(st.capture_map);
+    }
+}
+
+// ── Human play (optimistic) ───────────────────────────────────────────────
+function playCard(handIdx, tableIdxs, fromEl, capEls, isCapture, isChkobba){
+    if(_busy) return;
+
+    // Snapshot before any DOM change
+    var snap = takeSnap(isCapture ? null : fromEl, false);
+
+    // Build predicted state (don't set has_pending_bot — bot card unknown yet)
+    var predicted = _state ? predictPlay(_state, parseInt(handIdx), tableIdxs) : null;
+
+    // ── SocketIO path (preferred when socket is connected) ────────────────
+    if(window.Game && window.Game.socket && window.Game.socket.connected && _state){
+        var playedCardData = window.cardStrToData && window.cardStrToData(_state.human_hand[handIdx]);
+        if(playedCardData){
+            var captureCardDatas = (tableIdxs||[]).map(function(ti){
+                var slots = _state.table_slots || [];
+                for(var j=0;j<slots.length;j++){
+                    if(slots[j].table_index===ti && slots[j].card)
+                        return window.cardStrToData(slots[j].card);
+                }
+                return null;
+            }).filter(Boolean);
+
+            // Store prediction so state_snapshot handler can skip re-render if match
+            if(window._gameEngine) window._gameEngine._lastPredicted = predicted;
+
+            // Emit to server (non-blocking — optimistic UI handles feedback)
+            window.Game.playCard(playedCardData, captureCardDatas);
+
+            // Local animations (identical to AJAX path)
+            if(isCapture){
+                if(isChkobba && window.chkobbaAnimation){
+                    var allT=document.querySelectorAll('#table-cards .table-card:not(.table-slot-empty)');
+                    allT.forEach(function(e){e.classList.add('chkobba-glow');});
+                    var felt=document.querySelector('.felt-cards')||document.querySelector('.felt');
+                    setTimeout(function(){window.chkobbaAnimation(felt,function(){});},200);
+                } else {
+                    if(capEls) capEls.forEach(function(e){e.classList.add('capture-flash');});
+                    // Apply predicted state after capture flash so animation plays
+                    setTimeout(function(){
+                        if(predicted) applyState(predicted, snap);
+                    }, 800);
+                }
+            } else {
+                if(fromEl){fromEl.style.opacity='0.25';fromEl.style.pointerEvents='none';}
+                if(predicted) applyState(predicted, snap);
+            }
+            return; // Skip AJAX path below
+        }
+    }
+    // ─────────────────────────────────────────────────────────────────────
+
+    // AJAX fallback (deprecated but kept functional)
+    var serverPromise = apiPost('/api/play', {
+        hand_index: handIdx, table_indices: tableIdxs.join(',')
+    }).then(function(st){ _state = st; return st; })
+      .catch(function(){ window.location.reload(); });
+
+    function handleServer(st){
+        if(!st) return;
+        if(st.round_over || st.match_over){ applyState(st, null); return; }
+        if(!predicted || !statesMatch(predicted, st)) reconcile(st);
+        else onServerConfirm(st);
+    }
+
+    if(isCapture){
+        if(isChkobba && window.chkobbaAnimation){
+            // Glow all table cards, run animation, THEN apply state from server
+            var allT = document.querySelectorAll('#table-cards .table-card:not(.table-slot-empty)');
+            allT.forEach(function(e){e.classList.add('chkobba-glow');});
+            var felt = document.querySelector('.felt-cards')||document.querySelector('.felt');
+            setTimeout(function(){
+                window.chkobbaAnimation(felt, function(){
+                    // Animation is ~1.2 s — server has already responded by now
+                    serverPromise.then(function(st){
+                        if(!st) return;
+                        if(st.round_over||st.match_over){ applyState(st,null); return; }
+                        // Use server state directly for the DOM update after chkobba
+                        _state = st;
+                        applyState(st, snap);
+                    });
+                });
+            }, 200);
+        } else {
+            // Capture flash (800 ms) → optimistic state → server confirm
+            if(capEls) capEls.forEach(function(e){e.classList.add('capture-flash');});
+            setTimeout(function(){
+                if(predicted) applyState(predicted, snap);
+                serverPromise.then(handleServer);
+            }, 800);
+        }
+    } else {
+        // Play-to-table: instantly apply predicted state, confirm in background
+        if(fromEl){ fromEl.style.opacity='0.25'; fromEl.style.pointerEvents='none'; }
+        if(predicted) applyState(predicted, snap);
+        serverPromise.then(handleServer);
+    }
+}
+
+// ── Bot turn ──────────────────────────────────────────────────────────────
+function scheduleBotTurn(st){
+    var done=false;
+    var safety=setTimeout(function(){ if(!done){done=true;doBotFetch(null);} },
+                          st.pending_bot_is_chkobba?3500:2200);
+
+    setTimeout(function(){
+        if(done) return;
+        var bc=document.querySelector('.bot-capture-card');
+        if(!bc){ done=true; clearTimeout(safety); doBotFetch(null); return; }
+
+        var snap=takeSnap(bc,true);
+
+        if(st.pending_bot_is_capture){
+            var capEls=(st.pending_bot_captured_indices||[]).map(function(ci){
+                return document.querySelector('[data-table-index="'+ci+'"]');
+            }).filter(Boolean);
+
+            function go(){
+                if(done) return; done=true; clearTimeout(safety); doBotFetch(snap);
+            }
+            if(st.pending_bot_is_chkobba&&window.chkobbaAnimation){
+                capEls.forEach(function(e){e.classList.add('chkobba-glow');});
+                var felt=document.querySelector('.felt-cards')||document.querySelector('.felt');
+                setTimeout(function(){ window.chkobbaAnimation(felt,go); }, 200);
+            } else {
+                capEls.forEach(function(e){e.classList.add('capture-flash');});
+                setTimeout(go, 800);
+            }
+        } else {
+            // Non-capture: FLIP from bot zone → table slot
+            done=true; clearTimeout(safety); doBotFetch(snap);
+        }
+    }, 900); // 200ms pause + 700ms reveal
+}
+
+function doBotFetch(snap){
+    apiPost('/api/bot_move',{})
+        .then(function(st){ _state=st; applyState(st,snap); })
+        .catch(function(){ window.location.reload(); });
+}
+
+// ── Human interaction listeners ───────────────────────────────────────────
+function attachListeners(captureMap){
+    var hCards=document.querySelectorAll('#hand-cards .card.selectable');
+    var tCards=document.querySelectorAll('#table-cards .card.selectable');
+    var playBtn=document.getElementById('play-button');
+    var resetBtn=document.getElementById('reset-selection');
+    var hint=document.getElementById('selection-hint');
+    var hIn=document.getElementById('hand-index');
+    var tIn=document.getElementById('table-indices');
+
+    var selHand=null, selHandEl=null, selTable=new Set(), valid=false;
+
+    function tip(s){ if(hint) hint.textContent=s; }
+    function eq(a,b){
+        if(a.length!==b.length) return false;
+        var sa=a.slice().sort(function(x,y){return x-y;}), sb=b.slice().sort(function(x,y){return x-y;});
+        return sa.every(function(v,i){return v===sb[i];});
+    }
+    function clearHL(){
+        hCards.forEach(function(c){c.classList.remove('selected');c.style.opacity='';c.style.pointerEvents='';});
+        tCards.forEach(function(c){c.classList.remove('highlighted','valid-capture','selected');});
+    }
+    function reset(){
+        selHand=null; selHandEl=null; selTable.clear(); valid=false;
+        if(hIn) hIn.value=''; if(tIn) tIn.value='';
+        if(playBtn) playBtn.disabled=true;
+        clearHL(); tip('Tap a card from your hand to play');
+    }
+    function sync(){
+        if(hIn) hIn.value=selHand!=null?selHand:'';
+        if(tIn) tIn.value=Array.from(selTable).join(',');
+        if(playBtn) playBtn.disabled=!valid;
+    }
+    function highlight(opts){
+        var all=new Set();
+        opts.forEach(function(o){o.table_indices.forEach(function(i){all.add(String(i));});});
+        tCards.forEach(function(c){if(all.has(c.dataset.tableIndex))c.classList.add('highlighted','valid-capture');});
+    }
+    function findMatch(hi,ti){
+        var opts=captureMap[hi]; if(!opts) return null;
+        var s=ti.slice().sort(function(a,b){return a-b;});
+        for(var i=0;i<opts.length;i++){if(eq(opts[i].table_indices,s))return opts[i];}
+        return null;
+    }
+    function refresh(){
+        if(selHand===null){valid=false;sync();return;}
+        var arr=Array.from(selTable);
+        valid=Boolean(findMatch(selHand,arr)); sync();
+        if(valid) tip(arr.length===0?'Playing to table…':'Valid capture — tap Play');
+        else      tip(arr.length===0?'Tap a table card to capture':'Invalid selection — try again');
+    }
+
+    hCards.forEach(function(card){
+        card.addEventListener('click',function(){
+            var idx=this.dataset.handIndex;
+            reset(); selHand=idx; selHandEl=this; this.classList.add('selected');
+            var opts=(captureMap[idx]||[]).filter(function(o){return o.is_capture;});
+            if(opts.length===0){
+                valid=true; selTable.clear(); sync(); tip('Playing to table…');
+                playCard(parseInt(idx),[],this,null,false,false);
+                return;
+            }
+            highlight(opts); tip('Tap a table card to capture'); refresh();
+        });
+    });
+
+    tCards.forEach(function(card){
+        card.addEventListener('click',function(){
+            if(selHand===null){tip('Tap a card from your hand first');return;}
+            if(!this.classList.contains('valid-capture')){tip('Not part of a valid capture');return;}
+            var idx=parseInt(this.dataset.tableIndex,10);
+            if(selTable.has(idx)){selTable.delete(idx);this.classList.remove('selected');}
+            else{selTable.add(idx);this.classList.add('selected');}
+            refresh();
+            if(valid){
+                tip('Playing move…');
+                var selT=Array.from(tCards).filter(function(c){return c.classList.contains('selected');});
+                var allNE=Array.from(document.querySelectorAll('#table-cards .table-card:not(.table-slot-empty)'));
+                var isChk=selT.length>0&&selT.length===allNE.length;
+                playCard(parseInt(selHand),Array.from(selTable),selHandEl,selT,true,isChk);
+            }
+        });
+    });
+
+    // Intercept form submit (fallback & Play button)
+    var form=document.getElementById('play-form');
+    if(form&&!form._ajaxBound){
+        form._ajaxBound=true;
+        form.addEventListener('submit',function(e){
+            e.preventDefault();
+            if(!valid||selHand===null) return;
+            var selT=Array.from(tCards).filter(function(c){return c.classList.contains('selected');});
+            var allNE=Array.from(document.querySelectorAll('#table-cards .table-card:not(.table-slot-empty)'));
+            var isChk=selT.length>0&&selT.length===allNE.length;
+            playCard(parseInt(selHand),Array.from(selTable),selHandEl,selT,selT.length>0,isChk);
+        });
+    }
+
+    if(resetBtn) resetBtn.addEventListener('click',reset);
+}
+
+// ── Initialise from the server-rendered page ──────────────────────────────
+(function init(){
+    var ps=null;
+    try{ var el=document.getElementById('page-state'); if(el) ps=JSON.parse(el.textContent); }catch(e){}
+    if(!ps||ps.round_over||ps.match_over) return; // modals handled by Jinja2
+
+    _state = ps; // seed prediction cache from server-rendered data
+
+    // When a valid room_id is present, SocketIO will connect shortly and the
+    // server will send a state_snapshot via game_join.  Avoid firing the AJAX
+    // bot path here so we don't double-trigger the bot turn.
+    var hasSocket = ps.room_id && ps.room_id !== '__no_room__';
+    if(hasSocket){
+        // Only attach hand listeners if it's the human's turn; bot turn and
+        // full re-render will come via the socket state_snapshot.
+        if(!ps.has_pending_bot && ps.human_is_current) attachListeners(ps.capture_map);
+    } else {
+        // No socket — use AJAX path as before
+        if(ps.has_pending_bot)       scheduleBotTurn(ps);
+        else if(ps.human_is_current) attachListeners(ps.capture_map);
+    }
+})();
+
+// ── Expose engine API for socket-client.js ───────────────────────────────
+window._gameEngine = {
+    applyState:    applyState,
+    statesMatch:   statesMatch,
+    reconcile:     reconcile,
+    getState:      function(){ return _state; },
+    setState:      function(s){ _state = s; },
+    _lastPredicted: null,
+};
+
+})(); // end AJAX engine
+</script>
+
+<!-- ════ SocketIO game init ════ -->
+<script>
+document.addEventListener('DOMContentLoaded', function(){
+    var eng = window._gameEngine;
+    if(!eng) return;
+    var ps = eng.getState();
+    if(!ps || ps.show_start_screen || !ps.room_id || ps.room_id === '__no_room__') return;
+
+    window.Game.init(ps.room_id, ps.my_seat || 0);
+
+    // Delta event handlers — lightweight animation / commentary hooks.
+    // State reconciliation is handled by the state_snapshot handler in socket-client.js.
+    window.Game.on('bot_thinking', function(){
+        var hint = document.getElementById('selection-hint');
+        if(hint) hint.textContent = 'Si Ahmed is thinking\u2026';
+        var bSt = document.querySelector('.opp-zone .zone-status');
+        if(bSt) bSt.innerHTML = '<span class="badge thinking">Thinking\u2026</span>';
+    });
+
+    window.Game.on('cards_captured', function(data){
+        if(data.is_chkobba && window.showCommentaryToast && window.toastsEnabled && window.toastsEnabled())
+            window.showCommentaryToast('Mabrouk! \uD83C\uDF89');
+    });
+
+    window.Game.on('round_over',  function(){ window.location.reload(); });
+    window.Game.on('match_over',  function(){ window.location.reload(); });
+});
+</script>
+
+<!-- ════ Commentary toast element ════ -->
+<div id="commentary-toast" role="status" aria-live="polite"></div>
+
+{% if commentary_toast %}
+<script type="application/json" id="commentary-data">{{ commentary_toast | tojson | safe }}</script>
+{% endif %}
+
+<!-- ════ Commentary toast JS ════ -->
+<script>
+(function(){
+    function showToast(msg){
+        var el = document.getElementById('commentary-toast');
+        if(!el || !msg) return;
+        el.textContent = msg;
+        el.classList.add('visible');
+        setTimeout(function(){
+            el.classList.remove('visible');
+        }, 2200);
+    }
+
+    // Check if toasts are enabled (localStorage toggle, default ON)
+    function toastsEnabled(){
+        return localStorage.getItem('chk_toasts') !== 'off';
+    }
+
+    var dataEl = document.getElementById('commentary-data');
+    if(dataEl && toastsEnabled()){
+        try {
+            var msg = JSON.parse(dataEl.textContent);
+            if(msg) setTimeout(function(){ showToast(msg); }, 400);
+        } catch(e){}
+    }
+
+    // Expose so other scripts can trigger toasts (e.g. chkobba during animation)
+    window.showCommentaryToast = showToast;
+    window.toastsEnabled = toastsEnabled;
+})();
+</script>
+
+<!-- ════ Café ambient sound ════ -->
+<!--
+  AUDIO FILES — place your own royalty-free files at these paths:
+    ui/static/sounds/cafe-chatter.mp3   — faint café background noise
+    ui/static/sounds/tea-clink.mp3      — occasional glass/tea clink (short loop)
+    ui/static/sounds/oud.mp3            — soft oud or Stambeli ambient music
+  Suggested sources: freesound.org, zapsplat.com, pixabay.com (filter by CC0).
+-->
+<script>
+(function(){
+    var SOUNDS = [
+        { src: '/static/sounds/cafe-chatter.mp3', vol: 0.18 },
+        { src: '/static/sounds/oud.mp3',          vol: 0.12 },
+    ];
+    var CLINK   = { src: '/static/sounds/tea-clink.mp3', vol: 0.25 };
+    var audios  = [];
+    var clinkAudio = null;
+    var enabled = localStorage.getItem('chk_sound') === 'on';
+    var initialized = false;
+
+    function initAudio(){
+        if(initialized) return;
+        initialized = true;
+        SOUNDS.forEach(function(s){
+            var a = new Audio(s.src);
+            a.loop  = true;
+            a.volume = s.vol;
+            audios.push(a);
+        });
+        clinkAudio = new Audio(CLINK.src);
+        clinkAudio.volume = CLINK.vol;
+    }
+
+    function startAll(){
+        initAudio();
+        audios.forEach(function(a){ a.play().catch(function(){}); });
+        scheduleClicks();
+    }
+    function stopAll(){
+        audios.forEach(function(a){ a.pause(); });
+    }
+
+    var clinkTimer = null;
+    function scheduleClicks(){
+        if(!enabled) return;
+        clearTimeout(clinkTimer);
+        var delay = 8000 + Math.random() * 12000; // 8–20 s
+        clinkTimer = setTimeout(function(){
+            if(enabled && clinkAudio){
+                clinkAudio.currentTime = 0;
+                clinkAudio.play().catch(function(){});
+            }
+            scheduleClicks();
+        }, delay);
+    }
+
+    function setEnabled(on){
+        enabled = on;
+        localStorage.setItem('chk_sound', on ? 'on' : 'off');
+        var btn = document.getElementById('sound-btn');
+        if(btn){ btn.title = on ? 'Mute café sounds' : 'Enable café sounds'; btn.dataset.on = on ? '1' : ''; }
+        var slider = document.getElementById('sound-slider');
+        if(slider) slider.disabled = !on;
+        if(on){ startAll(); } else { stopAll(); clearTimeout(clinkTimer); }
+    }
+
+    function setVolume(v){
+        audios.forEach(function(a){ a.volume = Math.min(v, 0.3); }); // cap at 0.3
+        if(clinkAudio) clinkAudio.volume = Math.min(v * 1.4, 0.4);
+    }
+
+    function updateSoundIcon(){
+        var btn = document.getElementById('sound-btn');
+        if(btn) btn.textContent = enabled ? '🔊' : '🔇';
+    }
+
+    // Wire up buttons after DOM is ready
+    document.addEventListener('DOMContentLoaded', function(){
+        var btn    = document.getElementById('sound-btn');
+        var slider = document.getElementById('sound-slider');
+        var toastBtn = document.getElementById('toast-toggle-btn');
+        if(btn){
+            updateSoundIcon();
+            btn.title = enabled ? 'Mute café sounds' : 'Enable café sounds';
+            btn.addEventListener('click', function(e){
+                e.stopPropagation();
+                setEnabled(!enabled);
+                updateSoundIcon();
+            });
+        }
+        if(slider){
+            slider.disabled = !enabled;
+            slider.addEventListener('input', function(){ setVolume(parseFloat(this.value)); });
+        }
+        if(toastBtn){
+            var toastsOn = localStorage.getItem('chk_toasts') !== 'off';
+            toastBtn.style.opacity = toastsOn ? '1' : '.35';
+            toastBtn.title = toastsOn ? 'Commentary ON — click to mute' : 'Commentary OFF — click to enable';
+            toastBtn.addEventListener('click', function(e){
+                e.stopPropagation();
+                var nowOn = localStorage.getItem('chk_toasts') !== 'off';
+                localStorage.setItem('chk_toasts', nowOn ? 'off' : 'on');
+                toastBtn.style.opacity = nowOn ? '.35' : '1';
+                toastBtn.title = nowOn ? 'Commentary OFF — click to enable' : 'Commentary ON — click to mute';
+            });
+        }
+        if(enabled) startAll();
+    });
+})();
+</script>
+
+<!-- ════ Multiplayer landing buttons ════ -->
+<script>
+(function(){
+    var CSRF = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+
+    function doPost(url, body){
+        return fetch(url, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(Object.assign({_csrf_token: CSRF}, body))
+        }).then(function(r){ return r.json(); });
+    }
+
+    // ── Play vs Bot (Phase 8) ──────────────────────────────────────────────
+    var botBtn = document.getElementById('landing-bot-btn');
+    if(botBtn){
+        botBtn.addEventListener('click', function(){
+            botBtn.disabled = true;
+            botBtn.textContent = 'Starting\u2026';
+            doPost('/api/rooms/create-bot', {target_score: 11})
+            .then(function(d){
+                if(d.room_id) window.location.href = '/play/' + d.room_id;
+                else{ botBtn.disabled=false; botBtn.textContent='\uD83E\uDD16 Play vs Bot'; alert(d.error||'Error'); }
+            })
+            .catch(function(){ botBtn.disabled=false; botBtn.textContent='\uD83E\uDD16 Play vs Bot'; });
+        });
+    }
+
+    // ── Quick Match ────────────────────────────────────────────────────────
+    var qmBtn = document.getElementById('landing-quickmatch-btn');
+    if(qmBtn){
+        qmBtn.addEventListener('click', function(){
+            qmBtn.disabled = true;
+            qmBtn.textContent = 'Searching\u2026';
+            doPost('/api/rooms/quickmatch', {target_score: 11})
+            .then(function(d){
+                if(d.room_id) window.location.href = '/play/' + d.room_id;
+                else{ qmBtn.disabled=false; qmBtn.textContent='⚔ Quick Match — 1v1'; alert(d.error||'Error'); }
+            })
+            .catch(function(){ qmBtn.disabled=false; qmBtn.textContent='⚔ Quick Match — 1v1'; });
+        });
+    }
+
+    // ── Invite a Friend ────────────────────────────────────────────────────
+    var invBtn = document.getElementById('landing-invite-btn');
+    if(invBtn){
+        invBtn.addEventListener('click', function(){
+            invBtn.disabled = true;
+            invBtn.textContent = 'Creating room\u2026';
+            doPost('/api/rooms/invite', {target_score: 11})
+            .then(function(d){
+                if(d.room_id) window.location.href = '/play/' + d.room_id;
+                else{ invBtn.disabled=false; invBtn.textContent='🔗 Play with a Friend'; alert(d.error||'Error'); }
+            })
+            .catch(function(){ invBtn.disabled=false; invBtn.textContent='🔗 Play with a Friend'; });
+        });
+    }
+})();
+</script>
+
+<!-- ════ Change-name modal ════ -->
+<div id="name-modal" class="name-modal-backdrop" role="dialog" aria-modal="true" aria-label="Change your name" hidden>
+    <div class="name-modal-box">
+        <h2 class="name-modal-title">Your name</h2>
+        <div id="name-modal-avatar" class="name-modal-avatar" style="background:{{ avatar_color }}">{{ avatar_initial }}</div>
+        <input id="name-modal-input" class="name-modal-input" type="text" maxlength="30"
+               placeholder="Enter a name…" autocomplete="off" spellcheck="false"
+               value="{{ display_name }}" aria-label="Display name">
+        <p id="name-modal-error" class="name-modal-error" hidden></p>
+        <div class="name-modal-actions">
+            <button id="name-modal-save" class="btn-deal name-modal-save">Save</button>
+            <button id="name-modal-cancel" class="name-modal-cancel">Cancel</button>
+        </div>
+    </div>
+</div>
+
+<script>
+(function(){
+    var modal   = document.getElementById('name-modal');
+    var input   = document.getElementById('name-modal-input');
+    var errEl   = document.getElementById('name-modal-error');
+    var saveBtn = document.getElementById('name-modal-save');
+    var avatar  = document.getElementById('name-modal-avatar');
+
+    // A CSRF token is embedded in the page already (used by the form).
+    // Re-read it from the meta tag so this script works on every page load.
+    function getCSRF(){
+        var m = document.querySelector('meta[name="csrf-token"]');
+        return m ? m.getAttribute('content') : '';
+    }
+
+    function open(){
+        if(!modal) return;
+        errEl.hidden = true;
+        input.value = (document.getElementById('zone-display-name') ||
+                       document.querySelector('.hs-name-text') ||
+                       {textContent:''}).textContent.trim();
+        modal.hidden = false;
+        input.focus();
+        input.select();
+    }
+
+    function close(){ if(modal) modal.hidden = true; }
+
+    function showError(msg){ errEl.textContent = msg; errEl.hidden = false; }
+
+    function updateAvatar(name){
+        if(avatar && name) avatar.textContent = name[0].toUpperCase();
+    }
+
+    // Wire open triggers (both HUD button and landing edit button)
+    document.querySelectorAll('#open-name-modal').forEach(function(btn){
+        btn.addEventListener('click', open);
+    });
+
+    // Close on backdrop click
+    if(modal) modal.addEventListener('click', function(e){
+        if(e.target === modal) close();
+    });
+
+    document.getElementById('name-modal-cancel').addEventListener('click', close);
+
+    // Keyboard: Enter = save, Escape = close
+    if(input) input.addEventListener('keydown', function(e){
+        if(e.key === 'Enter')  saveBtn.click();
+        if(e.key === 'Escape') close();
+    });
+
+    // Live avatar preview
+    if(input) input.addEventListener('input', function(){ updateAvatar(this.value); });
+
+    saveBtn.addEventListener('click', function(){
+        var name = (input.value || '').trim();
+        if(!name){ showError('Name cannot be empty.'); return; }
+        if(name.length > 30){ showError('Max 30 characters.'); return; }
+
+        saveBtn.disabled = true;
+        fetch('/api/profile/name', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({name: name, _csrf_token: getCSRF()})
+        })
+        .then(function(r){ return r.json().then(function(d){ return {ok:r.ok,data:d}; }); })
+        .then(function(res){
+            if(!res.ok){ showError(res.data.error || 'Failed to save.'); return; }
+            // Update every name display on the page
+            document.querySelectorAll('.hs-name-text').forEach(function(el){ el.textContent = name; });
+            document.querySelectorAll('#zone-display-name').forEach(function(el){ el.textContent = name; });
+            document.querySelectorAll('.landing-player-name').forEach(function(el){ el.textContent = name; });
+            close();
+        })
+        .catch(function(){ showError('Network error — try again.'); })
+        .finally(function(){ saveBtn.disabled = false; });
+    });
+})();
+</script>
+
 </body>
 </html>

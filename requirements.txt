@@ -1,10 +1,14 @@
 # Render / Linux production:
-#   gunicorn --bind 0.0.0.0:$PORT ui.app:app
+#   gunicorn -k eventlet -w 1 --bind 0.0.0.0:$PORT ui.app:app
 #
-# Windows (gunicorn does not work — no fcntl):
+# Windows dev (gunicorn has no fcntl; use the built-in socketio runner):
 #   python ui/app.py
-#   waitress-serve --listen=127.0.0.1:5000 ui.app:app
+#   (waitress no longer used — SocketIO needs eventlet or threading server)
 
 Flask>=3.0.0
 gunicorn>=22.0.0
-waitress>=3.0.0
+
+# Real-time multiplayer
+flask-socketio>=5.3.0   # includes python-socketio
+eventlet>=0.35.0        # async WSGI server + monkey-patching for SocketIO
+redis>=5.0.0            # Python client; also used as SocketIO message broker
