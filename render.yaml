@@ -3,9 +3,9 @@ services:
     name: chkobba-app
     env: python
     buildCommand: pip install -r requirements.txt
-    # -k eventlet  → eventlet worker class (required for Socket.IO WebSocket support)
+    # Explicit class avoids environments where the short alias `eventlet` fails.
     # -w 1         → single worker; increase to ≥2 only after adding Redis REDIS_URL
-    startCommand: gunicorn -k eventlet -w 1 --bind 0.0.0.0:$PORT ui.app:app
+    startCommand: gunicorn -k gunicorn.workers.geventlet.EventletWorker -w 1 --bind 0.0.0.0:$PORT ui.app:app
     envVars:
       - key: SECRET_KEY
         generateValue: true
