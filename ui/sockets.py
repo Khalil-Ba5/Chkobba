@@ -852,6 +852,19 @@ def _run_bot_turn(room_id: str, store) -> None:
         logger.warning("[bot_turn] no pending move in room %.8s", room_id)
         return
 
+    # Emit a pre-play snapshot so clients can show the bot's chosen card in the
+    # opponent hand zone (pending_bot_played_card) before it hits the table.
+    # This restores the classic "thinking -> reveal -> play" flow in solo mode.
+    try:
+        vd_pending = manager.view_data()
+        vd_pending["seq"] = _next_seq(room_id)
+        socketio.emit("state_snapshot", vd_pending, to=room_id)
+    except Exception:
+        # Best effort only; game logic continues even if preview emit fails.
+        logger.exception("[bot_turn] failed to emit pending snapshot  room=%.8s", room_id)
+
+    socketio.sleep(0.28)
+
     bot_move   = manager.pending_bot_move
     pre_chk    = manager.state.players[manager.bot_id].chkobbas
 

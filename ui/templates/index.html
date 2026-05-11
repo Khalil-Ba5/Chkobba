@@ -158,10 +158,7 @@
                 <span class="bot-mood" title="Bot mood">{{ bot_mood }}</span>
                 {{ bot_name }}
             </span>
-            <span class="zone-stats">
-                {{ bot_captured_count }} captured &nbsp;·&nbsp;
-                <span class="chk-star">{{ bot_chkobbas }}✦</span>
-            </span>
+            <span class="zone-stats"><span class="chk-star">{{ bot_chkobbas }}✦</span></span>
             <span class="zone-status">
                 {% if not human_is_current and not round_over and not has_pending_bot %}
                     <span class="badge thinking">Thinking…</span>
@@ -170,12 +167,20 @@
                 {% endif %}
             </span>
         </div>
-        <div class="zone-cards" id="bot-cards">
-            {% for _ in range(bot_hand_count) %}<div class="card card-back"></div>{% endfor %}
-            {% if has_pending_bot %}
-                <div class="card bot-capture-card {% if '♥' in pending_bot_played_card or '♦' in pending_bot_played_card %}red-suit{% endif %}">{{ pending_bot_played_card }}</div>
-            {% endif %}
-            {% if bot_hand_count == 0 and not has_pending_bot %}<span class="zone-empty">No cards</span>{% endif %}
+        <div class="zone-hand-row">
+            <div class="zone-cards" id="bot-cards">
+                {% set hidden_count = (bot_hand_count - 1) if (has_pending_bot and pending_bot_played_card) else bot_hand_count %}
+                {% for _ in range([hidden_count, 0] | max) %}<div class="card card-back"></div>{% endfor %}
+                {% if has_pending_bot and pending_bot_played_card %}
+                    <div class="card bot-capture-card {% if '♥' in pending_bot_played_card or '♦' in pending_bot_played_card %}red-suit{% endif %}">{{ pending_bot_played_card }}</div>
+                {% endif %}
+                {% if bot_hand_count == 0 and not has_pending_bot %}<span class="zone-empty">No cards</span>{% endif %}
+            </div>
+            {% set cap_layers = 5 if bot_captured_count >= 20 else (4 if bot_captured_count >= 12 else (3 if bot_captured_count >= 5 else (2 if bot_captured_count >= 2 else (1 if bot_captured_count >= 1 else 0)))) %}
+            <div class="cap-pile" id="bot-cap" aria-hidden="true">
+                {% for _ in range(cap_layers) %}<div class="card card-back pile-card"></div>{% endfor %}
+                {% if bot_captured_count > 0 %}<span class="cap-count">{{ bot_captured_count }}</span>{% endif %}
+            </div>
         </div>
     </div>
 
@@ -201,10 +206,9 @@
         </div>
         <div class="deck-badge" aria-label="{{ deck_remaining }} cards in deck">
             {% if deck_remaining > 0 %}
-            <div class="deck-stack" aria-hidden="true">
-                <div class="card card-back pile-card"></div>
-                <div class="card card-back pile-card"></div>
-                <div class="card card-back pile-card"></div>
+            {% set deck_layers = 5 if deck_remaining >= 20 else (4 if deck_remaining >= 12 else (3 if deck_remaining >= 6 else (2 if deck_remaining >= 2 else 1))) %}
+            <div class="deck-stack" aria-hidden="true" data-layers="{{ deck_layers }}">
+                {% for _ in range(deck_layers) %}<div class="card card-back pile-card"></div>{% endfor %}
             </div>
             {% endif %}
             <span class="deck-count">{{ deck_remaining }}</span>
@@ -213,21 +217,25 @@
 
     <!-- ── Player Zone ── -->
     <div class="zone player-zone{% if human_is_current and not round_over and not has_pending_bot %} your-turn{% endif %}">
-        <div class="zone-cards" id="hand-cards">
-            {% if human_hand %}
-                {% for card in human_hand %}
-                <div class="card hand-card {% if '♥' in card or '♦' in card %}red-suit{% endif %}{% if human_is_current and not round_over and not has_pending_bot %} selectable{% endif %}"
-                    data-hand-index="{{ loop.index0 }}">{{ card }}</div>
-                {% endfor %}
-            {% else %}
-                <span class="zone-empty">No cards</span>
-            {% endif %}
+        <div class="zone-hand-row">
+            {% set cap_layers = 5 if human_captured_count >= 20 else (4 if human_captured_count >= 12 else (3 if human_captured_count >= 5 else (2 if human_captured_count >= 2 else (1 if human_captured_count >= 1 else 0)))) %}
+            <div class="cap-pile" id="player-cap" aria-hidden="true">
+                {% for _ in range(cap_layers) %}<div class="card card-back pile-card"></div>{% endfor %}
+                {% if human_captured_count > 0 %}<span class="cap-count">{{ human_captured_count }}</span>{% endif %}
+            </div>
+            <div class="zone-cards" id="hand-cards">
+                {% if human_hand %}
+                    {% for card in human_hand %}
+                    <div class="card hand-card {% if '♥' in card or '♦' in card %}red-suit{% endif %}{% if human_is_current and not round_over and not has_pending_bot %} selectable{% endif %}"
+                        data-hand-index="{{ loop.index0 }}">{{ card }}</div>
+                    {% endfor %}
+                {% else %}
+                    <span class="zone-empty">No cards</span>
+                {% endif %}
+            </div>
         </div>
         <div class="zone-meta zone-meta-bottom">
-            <span class="zone-stats">
-                {{ human_captured_count }} captured &nbsp;·&nbsp;
-                <span class="chk-star">{{ human_chkobbas }}✦</span>
-            </span>
+            <span class="zone-stats"><span class="chk-star">{{ human_chkobbas }}✦</span></span>
             <span class="zone-name player-name">
                 <span class="avatar-dot" style="background:{{ avatar_color }}">{{ avatar_initial }}</span>
                 <span id="zone-display-name">{{ display_name }}</span>
@@ -241,29 +249,6 @@
     </div>
 
 </div><!-- /board -->
-
-<!-- ── Hint Bar ── -->
-{% if not round_over and not match_over %}
-<div class="hint-bar">
-    <p id="selection-hint" class="hint-txt">
-        {%- if has_pending_bot -%}
-            Bot is playing…
-        {%- elif not human_is_current -%}
-            Bot is thinking…
-        {%- else -%}
-            Tap a card from your hand to play
-        {%- endif -%}
-    </p>
-    <form action="{{ url_for('play_selected') }}" method="post" id="play-form" class="hint-form"
-          style="{{ '' if human_is_current and not has_pending_bot else 'display:none' }}">
-        <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
-        <input type="hidden" name="hand_index" id="hand-index" value="">
-        <input type="hidden" name="table_indices" id="table-indices" value="">
-        <button type="submit" class="btn-play" id="play-button" disabled>Play</button>
-        <button type="button" class="btn-reset-sel" id="reset-selection">✕</button>
-    </form>
-</div>
-{% endif %}
 
 <!-- ── Move Log ── -->
 {% if last_human_move or last_bot_move %}
@@ -535,6 +520,8 @@ var EASE = 'cubic-bezier(0.22,1,0.36,1)';
 var CSRF = (document.querySelector('meta[name="csrf-token"]') || {}).getAttribute('content') || '';
 var _busy  = false;
 var _state = null; // authoritative game-state cache; kept in sync with every server response
+var _prevHumanHandLen = 0;
+var _prevBotHandCount = 0;
 
 // ── Client-side state prediction ─────────────────────────────────────────
 // Mirrors _place_card_in_slots() in app.py (human→odd rows, bot→even rows).
@@ -646,6 +633,137 @@ function hideSync(){ if(_dot) _dot.classList.remove('active'); }
 function isRed(card){ return card && (card.indexOf('♥')>=0 || card.indexOf('♦')>=0); }
 function rectObj(r){ return {left:r.left, top:r.top, width:r.width, height:r.height}; }
 
+// Animate captured cards from the table to a capture pile (human or bot)
+function flyToPile(elements, targetSelector, duration){
+    duration = duration || 600;
+    var target = document.querySelector(targetSelector);
+    if(!target || !elements || !elements.length) return;
+    var tr = target.getBoundingClientRect();
+    var tx = tr.left + tr.width/2;
+    var ty = tr.top + tr.height/2;
+
+    elements.forEach(function(el){
+        var r = el.getBoundingClientRect();
+        var clone = el.cloneNode(true);
+        clone.style.position = 'fixed';
+        clone.style.left = r.left + 'px';
+        clone.style.top = r.top + 'px';
+        clone.style.width = r.width + 'px';
+        clone.style.height = r.height + 'px';
+        clone.style.margin = '0';
+        clone.style.zIndex = '999';
+        clone.style.transition = 'transform ' + duration + 'ms cubic-bezier(.2, .8, .2, 1), opacity ' + duration + 'ms ease';
+        clone.style.pointerEvents = 'none';
+        clone.classList.remove('capture-flash', 'chkobba-glow', 'fly-from-human', 'fly-from-bot');
+        document.body.appendChild(clone);
+
+        // Hide original so only the clone is visible
+        el.style.opacity = '0';
+
+        requestAnimationFrame(function(){
+            requestAnimationFrame(function(){
+                var dx = tx - (r.left + r.width/2);
+                var dy = ty - (r.top + r.height/2);
+                clone.style.transform = 'translate(' + dx.toFixed(1) + 'px, ' + dy.toFixed(1) + 'px) scale(0.6) rotate(15deg)';
+                clone.style.opacity = '0.3';
+            });
+        });
+
+        setTimeout(function(){
+            if(clone.parentNode) clone.parentNode.removeChild(clone);
+        }, duration + 50);
+    });
+}
+
+// ── Deal animation: cards fly one-by-one from the deck to each hand ────────
+function animateDeal(st){
+    var deck = document.querySelector('.deck-stack');
+    if(!deck) return;
+    var dr = deck.getBoundingClientRect();
+    var deckX = dr.left + dr.width/2;
+    var deckY = dr.top + dr.height/2;
+
+    var botCards = Array.from(document.querySelectorAll('#bot-cards .card:not(.bot-capture-card)'));
+    var humanCards = Array.from(document.querySelectorAll('#hand-cards .card'));
+
+    // Interleave: bot0, human0, bot1, human1, bot2, human2
+    var seq = [];
+    var maxLen = Math.max(botCards.length, humanCards.length);
+    for(var i=0; i<maxLen; i++){
+        if(botCards[i]) seq.push({el: botCards[i], isBot: true});
+        if(humanCards[i]) seq.push({el: humanCards[i], isBot: false});
+    }
+    if(!seq.length) return;
+
+    // Use visibility:hidden so layout is preserved and getBoundingClientRect stays correct
+    seq.forEach(function(item){ item.el.style.visibility = 'hidden'; });
+
+    seq.forEach(function(item, idx){
+        setTimeout(function(){
+            var r = item.el.getBoundingClientRect();
+            var clone = document.createElement('div');
+            clone.className = 'card card-back';
+            clone.style.position = 'fixed';
+            clone.style.left = (deckX - r.width/2) + 'px';
+            clone.style.top = (deckY - r.height/2) + 'px';
+            clone.style.width = r.width + 'px';
+            clone.style.height = r.height + 'px';
+            clone.style.margin = '0';
+            clone.style.zIndex = '999';
+            clone.style.transition = 'transform 500ms cubic-bezier(.25, .85, .35, 1)';
+            clone.style.pointerEvents = 'none';
+            clone.style.opacity = '1';
+            clone.style.boxShadow = '0 6px 18px rgba(0,0,0,.5)';
+            document.body.appendChild(clone);
+
+            var tx = (r.left + r.width/2) - deckX;
+            var ty = (r.top + r.height/2) - deckY;
+            var rot = item.isBot ? -8 : 8;
+
+            requestAnimationFrame(function(){
+                requestAnimationFrame(function(){
+                    clone.style.transform = 'translate(' + tx.toFixed(1) + 'px, ' + ty.toFixed(1) + 'px) rotate(' + rot + 'deg)';
+                });
+            });
+
+            setTimeout(function(){
+                if(clone.parentNode) clone.parentNode.removeChild(clone);
+                item.el.style.visibility = 'visible';
+            }, 500);
+        }, idx * 250);
+    });
+}
+
+// ── Shared bot capture animation (SocketIO + AJAX) ────────────────────────
+var _botCaptureTimer = null;
+
+function animateBotCapture(st){
+    if(_botCaptureTimer) return; // already scheduled
+    var bc = document.querySelector('.bot-capture-card');
+    var capEls = (st.pending_bot_captured_indices||[]).map(function(ci){
+        return document.querySelector('[data-table-index="'+ci+'"]');
+    }).filter(Boolean);
+
+    if(st.pending_bot_is_chkobba && window.chkobbaAnimation){
+        capEls.forEach(function(e){e.classList.add('chkobba-glow');});
+        var felt = document.querySelector('.felt-cards') || document.querySelector('.felt');
+        setTimeout(function(){
+            window.chkobbaAnimation(felt, function(){
+                _botCaptureTimer = null;
+            });
+        }, 200);
+        _botCaptureTimer = -1; // non-timeout flag
+    } else {
+        capEls.forEach(function(e){e.classList.add('capture-flash');});
+        var flyEls = capEls.slice();
+        if(bc) flyEls.push(bc);
+        flyToPile(flyEls, '#bot-cap', 600);
+        _botCaptureTimer = setTimeout(function(){
+            _botCaptureTimer = null;
+        }, 800);
+    }
+}
+
 function enhance(el){
     var t=el.textContent.trim();
     if(!t||el.classList.contains('card-back')||el.classList.contains('table-slot-empty'))return;
@@ -691,13 +809,25 @@ function buildTable(slots, sel, lastCard, lastBy){
     }).join('');
 }
 
+function buildCapPile(count){
+    if(!count) return '';
+    var layers=count>=20?5:count>=12?4:count>=5?3:count>=2?2:1;
+    var h='';
+    for(var i=0;i<layers;i++) h+='<div class="card card-back pile-card"></div>';
+    h+='<span class="cap-count">'+count+'</span>';
+    return h;
+}
+
 function buildBotHand(count, hasPending, pendingCard){
     var h='';
-    for(var i=0;i<count;i++) h+='<div class="card card-back"></div>';
+    // When showing the pending played card, subtract 1 from hidden backs so total
+    // visual card count stays equal to the bot's actual hand size (not count+1).
+    var hiddenCount = (hasPending && pendingCard) ? Math.max(0, count - 1) : count;
+    for(var i=0;i<hiddenCount;i++) h+='<div class="card card-back"></div>';
     if(hasPending&&pendingCard)
         h+='<div class="card bot-capture-card'+(isRed(pendingCard)?' red-suit':'')+
            '">'+pendingCard+'</div>';
-    if(!count&&!hasPending) h+='<span class="zone-empty">No cards</span>';
+    if(!hiddenCount&&!hasPending) h+='<span class="zone-empty">No cards</span>';
     return h;
 }
 
@@ -794,7 +924,9 @@ function applyState(st, snap){
     var moodEl=document.querySelector('.bot-mood');
     if(moodEl) moodEl.textContent=st.bot_mood;
     var bStats=document.querySelector('.opp-zone .zone-stats');
-    if(bStats) bStats.innerHTML=st.bot_captured_count+' captured &nbsp;·&nbsp;<span class="chk-star">'+st.bot_chkobbas+'✦</span>';
+    if(bStats) bStats.innerHTML='<span class="chk-star">'+st.bot_chkobbas+'✦</span>';
+    var bCap=document.getElementById('bot-cap');
+    if(bCap) bCap.innerHTML=buildCapPile(st.bot_captured_count);
     var bStatus=document.querySelector('.opp-zone .zone-status');
     if(bStatus) bStatus.innerHTML=st.has_pending_bot?'<span class="badge thinking">Playing…</span>':
                                   (!st.human_is_current?'<span class="badge thinking">Thinking…</span>':'');
@@ -803,13 +935,29 @@ function applyState(st, snap){
     var dCount=document.querySelector('.deck-count');
     if(dCount) dCount.textContent=st.deck_remaining;
     var dStack=document.querySelector('.deck-stack');
-    if(dStack) dStack.style.display=st.deck_remaining>0?'':'none';
+    if(dStack){
+        var dr=st.deck_remaining||0;
+        dStack.style.display=dr>0?'':'none';
+        var layers=dr>=20?5:dr>=12?4:dr>=6?3:dr>=2?2:1;
+        var cur=dStack.querySelectorAll('.pile-card').length;
+        while(dStack.querySelectorAll('.pile-card').length>layers){
+            var last=dStack.querySelector('.pile-card:last-of-type');
+            if(last) dStack.removeChild(last); else break;
+        }
+        while(dStack.querySelectorAll('.pile-card').length<layers){
+            var c=document.createElement('div');
+            c.className='card card-back pile-card';
+            dStack.insertBefore(c,dStack.querySelector('.pile-card'));
+        }
+    }
 
     // Player zone classes + stats + badge
     var pZone=document.querySelector('.player-zone');
     if(pZone) pZone.classList.toggle('your-turn',human);
     var pStats=document.querySelector('.player-zone .zone-stats');
-    if(pStats) pStats.innerHTML=st.human_captured_count+' captured &nbsp;·&nbsp;<span class="chk-star">'+st.human_chkobbas+'✦</span>';
+    if(pStats) pStats.innerHTML='<span class="chk-star">'+st.human_chkobbas+'✦</span>';
+    var pCap=document.getElementById('player-cap');
+    if(pCap) pCap.innerHTML=buildCapPile(st.human_captured_count);
     var pStatus=document.querySelector('.player-zone .zone-status');
     if(pStatus) pStatus.innerHTML=human?'<span class="badge your-turn-badge">Your turn</span>':'';
 
@@ -844,16 +992,28 @@ function applyState(st, snap){
         }
     }
 
+    // Detect fresh deal and animate cards flying from deck
+    var isDeal = _prevHumanHandLen===0 && _prevBotHandCount===0 &&
+                 st.human_hand && st.human_hand.length>0 && st.bot_hand_count>0;
+    if(isDeal) animateDeal(st);
+    _prevHumanHandLen = st.human_hand ? st.human_hand.length : 0;
+    _prevBotHandCount = st.bot_hand_count || 0;
+
     // Commentary toast
     if(st.commentary_toast && window.showCommentaryToast) window.showCommentaryToast(st.commentary_toast);
 
     // Next step: bot turn or attach human listeners
-    // When socket is connected, the server drives the bot via background task.
     if(st.has_pending_bot){
+        if(st.pending_bot_is_capture){
+            animateBotCapture(st);
+        }
+        // AJAX fallback: also kick off the timer that will POST /api/bot_move
         if(!(window.Game && window.Game.socket && window.Game.socket.connected))
-            scheduleBotTurn(st); // AJAX fallback only
-    } else if(human) {
-        attachListeners(st.capture_map);
+            scheduleBotTurn(st);
+    } else {
+        // Bot move committed — clear any pending capture timer
+        if(_botCaptureTimer){ clearTimeout(_botCaptureTimer); _botCaptureTimer = null; }
+        if(human) attachListeners(st.capture_map);
     }
 }
 
@@ -895,6 +1055,9 @@ function playCard(handIdx, tableIdxs, fromEl, capEls, isCapture, isChkobba){
                     setTimeout(function(){window.chkobbaAnimation(felt,function(){});},200);
                 } else {
                     if(capEls) capEls.forEach(function(e){e.classList.add('capture-flash');});
+                    var flyEls = capEls ? Array.from(capEls) : [];
+                    if(fromEl) flyEls.push(fromEl);
+                    flyToPile(flyEls, '#player-cap', 600);
                     // Apply predicted state after capture flash so animation plays
                     setTimeout(function(){
                         if(predicted) applyState(predicted, snap);
@@ -943,6 +1106,9 @@ function playCard(handIdx, tableIdxs, fromEl, capEls, isCapture, isChkobba){
         } else {
             // Capture flash (800 ms) → optimistic state → server confirm
             if(capEls) capEls.forEach(function(e){e.classList.add('capture-flash');});
+            var flyEls = capEls ? Array.from(capEls) : [];
+            if(fromEl) flyEls.push(fromEl);
+            flyToPile(flyEls, '#player-cap', 600);
             setTimeout(function(){
                 if(predicted) applyState(predicted, snap);
                 serverPromise.then(handleServer);
@@ -957,39 +1123,29 @@ function playCard(handIdx, tableIdxs, fromEl, capEls, isCapture, isChkobba){
 }
 
 // ── Bot turn ──────────────────────────────────────────────────────────────
+// AJAX-only: waits then POSTs /api/bot_move.  Capture animation is already
+// triggered by animateBotCapture() inside applyState.
 function scheduleBotTurn(st){
     var done=false;
     var safety=setTimeout(function(){ if(!done){done=true;doBotFetch(null);} },
-                          st.pending_bot_is_chkobba?3500:2200);
+                          st.pending_bot_is_chkobba?2800:1800);
 
+    // Capture: animation already started; just wait then fetch
+    if(st.pending_bot_is_capture){
+        setTimeout(function(){
+            if(!done){done=true;clearTimeout(safety);doBotFetch(null);}
+        }, 800);
+        return;
+    }
+
+    // Non-capture: small delay so the bot card has rendered before FLIP
     setTimeout(function(){
         if(done) return;
         var bc=document.querySelector('.bot-capture-card');
         if(!bc){ done=true; clearTimeout(safety); doBotFetch(null); return; }
-
         var snap=takeSnap(bc,true);
-
-        if(st.pending_bot_is_capture){
-            var capEls=(st.pending_bot_captured_indices||[]).map(function(ci){
-                return document.querySelector('[data-table-index="'+ci+'"]');
-            }).filter(Boolean);
-
-            function go(){
-                if(done) return; done=true; clearTimeout(safety); doBotFetch(snap);
-            }
-            if(st.pending_bot_is_chkobba&&window.chkobbaAnimation){
-                capEls.forEach(function(e){e.classList.add('chkobba-glow');});
-                var felt=document.querySelector('.felt-cards')||document.querySelector('.felt');
-                setTimeout(function(){ window.chkobbaAnimation(felt,go); }, 200);
-            } else {
-                capEls.forEach(function(e){e.classList.add('capture-flash');});
-                setTimeout(go, 800);
-            }
-        } else {
-            // Non-capture: FLIP from bot zone → table slot
-            done=true; clearTimeout(safety); doBotFetch(snap);
-        }
-    }, 900); // 200ms pause + 700ms reveal
+        done=true; clearTimeout(safety); doBotFetch(snap);
+    }, 120);
 }
 
 function doBotFetch(snap){
@@ -1103,22 +1259,43 @@ function attachListeners(captureMap){
 (function init(){
     var ps=null;
     try{ var el=document.getElementById('page-state'); if(el) ps=JSON.parse(el.textContent); }catch(e){}
-    if(!ps||ps.round_over||ps.match_over) return; // modals handled by Jinja2
+    if(!ps||ps.round_over||ps.match_over) return;
 
-    _state = ps; // seed prediction cache from server-rendered data
-
-    // When a valid room_id is present, SocketIO will connect shortly and the
-    // server will send a state_snapshot via game_join.  Avoid firing the AJAX
-    // bot path here so we don't double-trigger the bot turn.
+    _state = ps;
+    _prevHumanHandLen = ps.human_hand ? ps.human_hand.length : 0;
+    _prevBotHandCount = ps.bot_hand_count || 0;
     var hasSocket = ps.room_id && ps.room_id !== '__no_room__';
-    if(hasSocket){
-        // Only attach hand listeners if it's the human's turn; bot turn and
-        // full re-render will come via the socket state_snapshot.
-        if(!ps.has_pending_bot && ps.human_is_current) attachListeners(ps.capture_map);
+    var doDeal = _prevHumanHandLen>0 && _prevBotHandCount>0;
+
+    if(doDeal){
+        // Show truly empty hands first
+        var hc=document.getElementById('hand-cards');
+        var bc=document.getElementById('bot-cards');
+        if(hc) hc.innerHTML='';
+        if(bc) bc.innerHTML='';
+
+        // After 500ms rebuild hands and animate deal
+        setTimeout(function(){
+            if(hc){
+                var sel=ps.human_is_current && !ps.has_pending_bot && !ps.round_over;
+                hc.innerHTML=buildHand(ps.human_hand, sel);
+                hc.querySelectorAll('.card').forEach(enhance);
+            }
+            if(bc){
+                bc.innerHTML=buildBotHand(ps.bot_hand_count, ps.has_pending_bot, ps.pending_bot_played_card);
+                if(ps.has_pending_bot && ps.pending_bot_played_card){
+                    var bcc=bc.querySelector('.bot-capture-card');
+                    if(bcc) enhance(bcc);
+                }
+            }
+            animateDeal(ps);
+
+            if(!ps.has_pending_bot && ps.human_is_current) attachListeners(ps.capture_map);
+            else if(!hasSocket && ps.has_pending_bot) scheduleBotTurn(ps);
+        }, 500);
     } else {
-        // No socket — use AJAX path as before
-        if(ps.has_pending_bot)       scheduleBotTurn(ps);
-        else if(ps.human_is_current) attachListeners(ps.capture_map);
+        if(!ps.has_pending_bot && ps.human_is_current) attachListeners(ps.capture_map);
+        else if(!hasSocket && ps.has_pending_bot) scheduleBotTurn(ps);
     }
 })();
 

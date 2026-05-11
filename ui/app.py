@@ -1195,6 +1195,16 @@ class GameManager:
         pending_bot_is_capture     = self.pending_bot_is_capture if is_solo else False
         pending_bot_is_chkobba     = self.pending_bot_is_chkobba if is_solo else False
 
+        # last_played_by is stored in absolute seat terms (seat 0 -> "human",
+        # seat 1 -> "bot").  In multiplayer, seat 1's UI is mirrored by
+        # view_data(), so we remap this flag to viewer-relative terms.
+        last_played_by_view = self.last_played_by
+        if not is_solo and viewer_seat == 1:
+            if self.last_played_by == "human":
+                last_played_by_view = "bot"
+            elif self.last_played_by == "bot":
+                last_played_by_view = "human"
+
         return {
             "show_start_screen": False,
             "debug": debug,
@@ -1212,7 +1222,7 @@ class GameManager:
             "pending_bot_is_capture": pending_bot_is_capture,
             "pending_bot_is_chkobba": pending_bot_is_chkobba,
             "last_played_card": self.last_played_card,
-            "last_played_by": self.last_played_by,
+            "last_played_by": last_played_by_view,
 
             # Table
             "table_cards": [card_to_str(c) for c in self.state.table_cards],

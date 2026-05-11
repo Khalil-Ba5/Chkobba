@@ -202,19 +202,23 @@
                 <span class="bot-mood" title="Opponent mood">{{ bot_mood }}</span>
                 {{ bot_name }}
             </span>
-            <span class="zone-stats">
-                {{ bot_captured_count }} captured &nbsp;·&nbsp;
-                <span class="chk-star">{{ bot_chkobbas }}✦</span>
-            </span>
+            <span class="zone-stats"><span class="chk-star">{{ bot_chkobbas }}✦</span></span>
             <span class="zone-status">
                 {% if game_active and not human_is_current and not round_over and not has_pending_bot %}
                     <span class="badge thinking">Thinking…</span>
                 {% endif %}
             </span>
         </div>
-        <div class="zone-cards" id="bot-cards">
-            {% for _ in range(bot_hand_count) %}<div class="card card-back"></div>{% endfor %}
-            {% if bot_hand_count == 0 and game_active %}<span class="zone-empty">No cards</span>{% endif %}
+        <div class="zone-hand-row">
+            <div class="zone-cards" id="bot-cards">
+                {% for _ in range(bot_hand_count) %}<div class="card card-back"></div>{% endfor %}
+                {% if bot_hand_count == 0 and game_active %}<span class="zone-empty">No cards</span>{% endif %}
+            </div>
+            {% set cap_layers = 5 if bot_captured_count >= 20 else (4 if bot_captured_count >= 12 else (3 if bot_captured_count >= 5 else (2 if bot_captured_count >= 2 else (1 if bot_captured_count >= 1 else 0)))) %}
+            <div class="cap-pile" id="bot-cap" aria-hidden="true">
+                {% for _ in range(cap_layers) %}<div class="card card-back pile-card"></div>{% endfor %}
+                {% if bot_captured_count > 0 %}<span class="cap-count">{{ bot_captured_count }}</span>{% endif %}
+            </div>
         </div>
     </div>
 
@@ -239,10 +243,9 @@
         </div>
         <div class="deck-badge" aria-label="{{ deck_remaining }} cards in deck">
             {% if deck_remaining > 0 %}
-            <div class="deck-stack" aria-hidden="true">
-                <div class="card card-back pile-card"></div>
-                <div class="card card-back pile-card"></div>
-                <div class="card card-back pile-card"></div>
+            {% set deck_layers = 5 if deck_remaining >= 20 else (4 if deck_remaining >= 12 else (3 if deck_remaining >= 6 else (2 if deck_remaining >= 2 else 1))) %}
+            <div class="deck-stack" aria-hidden="true" data-layers="{{ deck_layers }}">
+                {% for _ in range(deck_layers) %}<div class="card card-back pile-card"></div>{% endfor %}
             </div>
             {% endif %}
             <span class="deck-count">{{ deck_remaining }}</span>
@@ -251,21 +254,25 @@
 
     <!-- ── Player Zone ── -->
     <div class="zone player-zone{% if game_active and human_is_current and not round_over and not has_pending_bot %} your-turn{% endif %}">
-        <div class="zone-cards" id="hand-cards">
-            {% if human_hand %}
-                {% for card in human_hand %}
-                <div class="card hand-card {% if '♥' in card or '♦' in card %}red-suit{% endif %}{% if human_is_current and not round_over and not has_pending_bot %} selectable{% endif %}"
-                    data-hand-index="{{ loop.index0 }}">{{ card }}</div>
-                {% endfor %}
-            {% elif game_active %}
-                <span class="zone-empty">No cards</span>
-            {% endif %}
+        <div class="zone-hand-row">
+            {% set cap_layers = 5 if human_captured_count >= 20 else (4 if human_captured_count >= 12 else (3 if human_captured_count >= 5 else (2 if human_captured_count >= 2 else (1 if human_captured_count >= 1 else 0)))) %}
+            <div class="cap-pile" id="player-cap" aria-hidden="true">
+                {% for _ in range(cap_layers) %}<div class="card card-back pile-card"></div>{% endfor %}
+                {% if human_captured_count > 0 %}<span class="cap-count">{{ human_captured_count }}</span>{% endif %}
+            </div>
+            <div class="zone-cards" id="hand-cards">
+                {% if human_hand %}
+                    {% for card in human_hand %}
+                    <div class="card hand-card {% if '♥' in card or '♦' in card %}red-suit{% endif %}{% if human_is_current and not round_over and not has_pending_bot %} selectable{% endif %}"
+                        data-hand-index="{{ loop.index0 }}">{{ card }}</div>
+                    {% endfor %}
+                {% elif game_active %}
+                    <span class="zone-empty">No cards</span>
+                {% endif %}
+            </div>
         </div>
         <div class="zone-meta zone-meta-bottom">
-            <span class="zone-stats">
-                {{ human_captured_count }} captured &nbsp;·&nbsp;
-                <span class="chk-star">{{ human_chkobbas }}✦</span>
-            </span>
+            <span class="zone-stats"><span class="chk-star">{{ human_chkobbas }}✦</span></span>
             <span class="zone-name player-name">
                 <span class="avatar-dot" style="background:{{ avatar_color }}">{{ avatar_initial }}</span>
                 <span>{{ display_name }}</span>
@@ -279,27 +286,6 @@
     </div>
 
 </div><!-- /board -->
-
-<!-- ── Hint Bar ── -->
-{% if game_active and not round_over and not match_over %}
-<div class="hint-bar">
-    <p id="selection-hint" class="hint-txt">
-        {%- if not human_is_current -%}
-            Opponent is thinking…
-        {%- else -%}
-            Tap a card from your hand to play
-        {%- endif -%}
-    </p>
-    <form action="#" method="post" id="play-form" class="hint-form"
-          style="{{ '' if human_is_current and not has_pending_bot else 'display:none' }}">
-        <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
-        <input type="hidden" name="hand_index" id="hand-index" value="">
-        <input type="hidden" name="table_indices" id="table-indices" value="">
-        <button type="submit" class="btn-play" id="play-button" disabled>Play</button>
-        <button type="button" class="btn-reset-sel" id="reset-selection">✕</button>
-    </form>
-</div>
-{% endif %}
 
 <!-- ── Round Over ── -->
 {% if show_next_round %}
@@ -511,6 +497,7 @@ var EASE='cubic-bezier(0.22,1,0.36,1)';
 var CSRF=(document.querySelector('meta[name="csrf-token"]')||{}).getAttribute('content')||'';
 var _busy=false;
 var _state=null;
+var _pendingCaptureRects=null; // rects snapshotted in playCard before optimistic DOM wipe
 
 function _placeOptimistic(slots,card,isHuman){
     var par=isHuman?1:0;
@@ -643,12 +630,23 @@ function buildTable(slots,sel,lastCard,lastBy){
     }).join('');
 }
 
+function buildCapPile(count){
+    if(!count) return '';
+    var layers=count>=20?5:count>=12?4:count>=5?3:count>=2?2:1;
+    var h='';
+    for(var i=0;i<layers;i++) h+='<div class="card card-back pile-card"></div>';
+    h+='<span class="cap-count">'+count+'</span>';
+    return h;
+}
+
 function buildBotHand(count,hasPending,pendingCard){
     var h='';
-    for(var i=0;i<count;i++) h+='<div class="card card-back"></div>';
+    var hiddenCount = count;
+    if(hasPending&&pendingCard) hiddenCount = Math.max(0, count - 1);
+    for(var i=0;i<hiddenCount;i++) h+='<div class="card card-back"></div>';
     if(hasPending&&pendingCard)
         h+='<div class="card bot-capture-card'+(isRed(pendingCard)?' red-suit':'')+'">'+pendingCard+'</div>';
-    if(!count&&!hasPending) h+='<span class="zone-empty">No cards</span>';
+    if(!hiddenCount&&!hasPending) h+='<span class="zone-empty">No cards</span>';
     return h;
 }
 
@@ -704,6 +702,67 @@ function scatterAndFlip(container,snap){
     });
 }
 
+function animateCaptureToStack(fromRects, targetEl) {
+    if (!fromRects || !fromRects.length || !targetEl) return;
+    var tr    = targetEl.getBoundingClientRect();
+    var destX = tr.left + tr.width  / 2;
+    var destY = tr.top  + tr.height / 2;
+
+    function easeOut(t) { return 1 - Math.pow(1 - t, 3); }
+
+    fromRects.forEach(function(r, i) {
+        setTimeout(function() {
+            var sx = r.left + r.width  / 2;
+            var sy = r.top  + r.height / 2;
+            var w  = r.width;
+            var h  = r.height;
+            var dur = 420;
+
+            var clone = document.createElement('div');
+            clone.style.cssText =
+                'position:fixed;pointer-events:none;z-index:9999;' +
+                'width:' + w + 'px;height:' + h + 'px;' +
+                'left:' + (sx - w / 2) + 'px;top:' + (sy - h / 2) + 'px;' +
+                'border-radius:8px;' +
+                'background:url(/static/oc-card-back.svg) center/cover no-repeat;' +
+                'box-shadow:0 6px 20px rgba(0,0,0,.65);';
+            document.body.appendChild(clone);
+
+            var t0 = null;
+            var isLast = (i === fromRects.length - 1);
+            function frame(now) {
+                if (!t0) t0 = now;
+                var p = Math.min((now - t0) / dur, 1);
+                var e = easeOut(p);
+                var x = sx + (destX - sx) * e;
+                var y = sy + (destY - sy) * e;
+                var scale   = 1 - e * 0.65;
+                var opacity = p < 0.65 ? 1 : 1 - (p - 0.65) / 0.35;
+                clone.style.left      = (x - w / 2) + 'px';
+                clone.style.top       = (y - h / 2) + 'px';
+                clone.style.transform = 'scale(' + scale + ') rotate(' + (e * 16) + 'deg)';
+                clone.style.opacity   = Math.max(0, opacity);
+                if (p < 1) {
+                    requestAnimationFrame(frame);
+                } else {
+                    if (clone.parentNode) clone.parentNode.removeChild(clone);
+                    if (isLast) {
+                        // Pulse the pile when the final card lands
+                        targetEl.style.transition = 'transform 120ms ease';
+                        targetEl.style.transform  = 'scale(1.2)';
+                        setTimeout(function() {
+                            targetEl.style.transition = 'transform 160ms ease';
+                            targetEl.style.transform  = '';
+                            setTimeout(function() { targetEl.style.transition = ''; }, 160);
+                        }, 120);
+                    }
+                }
+            }
+            requestAnimationFrame(frame);
+        }, i * 75);
+    });
+}
+
 function takeSnap(fromEl,isBot){
     var snap={played:null,bot:null,table:{}};
     if(fromEl){
@@ -717,7 +776,7 @@ function takeSnap(fromEl,isBot){
     return snap;
 }
 
-function applyState(st,snap){
+function applyState(st,snap,prevStateOverride){
     // If game board is hidden, show it on first real state
     if(st&&!st.show_start_screen&&!st.round_over&&!st.match_over){
         var wrap=document.getElementById('game-board-wrap');
@@ -745,19 +804,36 @@ function applyState(st,snap){
     var moodEl=document.querySelector('.bot-mood');
     if(moodEl) moodEl.textContent=st.bot_mood;
     var bStats=document.querySelector('.opp-zone .zone-stats');
-    if(bStats) bStats.innerHTML=st.bot_captured_count+' captured &nbsp;·&nbsp;<span class="chk-star">'+st.bot_chkobbas+'✦</span>';
+    if(bStats) bStats.innerHTML='<span class="chk-star">'+st.bot_chkobbas+'✦</span>';
     var bStatus=document.querySelector('.opp-zone .zone-status');
     if(bStatus) bStatus.innerHTML=!st.human_is_current?'<span class="badge thinking">Thinking\u2026</span>':'';
+    var bCap=document.getElementById('bot-cap');
+    if(bCap) bCap.innerHTML=buildCapPile(st.bot_captured_count);
 
     var dCount=document.querySelector('.deck-count');
     if(dCount) dCount.textContent=st.deck_remaining;
     var dStack=document.querySelector('.deck-stack');
-    if(dStack) dStack.style.display=st.deck_remaining>0?'':'none';
+    if(dStack){
+        var dr=st.deck_remaining||0;
+        dStack.style.display=dr>0?'':'none';
+        var layers=dr>=20?5:dr>=12?4:dr>=6?3:dr>=2?2:1;
+        while(dStack.querySelectorAll('.pile-card').length>layers){
+            var last=dStack.querySelector('.pile-card:last-of-type');
+            if(last) dStack.removeChild(last); else break;
+        }
+        while(dStack.querySelectorAll('.pile-card').length<layers){
+            var c=document.createElement('div');
+            c.className='card card-back pile-card';
+            dStack.insertBefore(c,dStack.querySelector('.pile-card'));
+        }
+    }
 
     var pZone=document.querySelector('.player-zone');
     if(pZone) pZone.classList.toggle('your-turn',human);
     var pStats=document.querySelector('.player-zone .zone-stats');
-    if(pStats) pStats.innerHTML=st.human_captured_count+' captured &nbsp;·&nbsp;<span class="chk-star">'+st.human_chkobbas+'✦</span>';
+    if(pStats) pStats.innerHTML='<span class="chk-star">'+st.human_chkobbas+'✦</span>';
+    var pCap=document.getElementById('player-cap');
+    if(pCap) pCap.innerHTML=buildCapPile(st.human_captured_count);
     var pStatus=document.querySelector('.player-zone .zone-status');
     if(pStatus) pStatus.innerHTML=human?'<span class="badge your-turn-badge">Your turn</span>':'';
 
@@ -790,6 +866,42 @@ function applyState(st,snap){
     _state=st;
 }
 
+function animateOpponentReveal(playedCard){
+    var zone = document.querySelector('.opp-zone');
+    var host = document.getElementById('bot-cards');
+    if(!zone || !host || !playedCard) return;
+
+    var anchor = host.querySelector('.card-back') || host;
+    var ar = anchor.getBoundingClientRect();
+    var zr = zone.getBoundingClientRect();
+
+    var reveal = document.createElement('div');
+    reveal.className = 'card card-back opp-reveal-card';
+    reveal.style.left = (ar.left - zr.left + ar.width / 2) + 'px';
+    reveal.style.top = (ar.top - zr.top + ar.height / 2) + 'px';
+    zone.appendChild(reveal);
+
+    // Phase 1: show back card from opponent hand.
+    requestAnimationFrame(function(){
+        reveal.classList.add('phase-back');
+    });
+
+    // Phase 2: flip to face.
+    setTimeout(function(){
+        if(!reveal || !reveal.parentNode) return;
+        reveal.classList.remove('card-back');
+        reveal.textContent = playedCard;
+        if(isRed(playedCard)) reveal.classList.add('red-suit');
+        enhance(reveal);
+        reveal.classList.add('phase-face');
+    }, 140);
+
+    // Cleanup shortly before authoritative snapshot lands.
+    setTimeout(function(){
+        if(reveal && reveal.parentNode) reveal.parentNode.removeChild(reveal);
+    }, 520);
+}
+
 function scheduleBotTurn(st){
     // 1v1: no bot to schedule — server drives turns via SocketIO
     return;
@@ -807,6 +919,23 @@ function playCard(handIdx,tableIdxs,handEl,tableEls,isCapture,isChk){
     }).filter(Boolean);
 
     var snap=takeSnap(handEl,false);
+
+    // Snapshot captured table-card rects NOW, before applyState wipes the DOM.
+    // The cards_captured socket event will consume these rects for the fly animation.
+    if(isCapture){
+        var _tcEl=document.getElementById('table-cards');
+        _pendingCaptureRects=[];
+        if(_tcEl){
+            tableIdxs.forEach(function(ti){
+                _tcEl.querySelectorAll('.table-card').forEach(function(el){
+                    if(parseInt(el.dataset.tableIndex,10)===ti)
+                        _pendingCaptureRects.push(rectObj(el.getBoundingClientRect()));
+                });
+            });
+        }
+    } else {
+        _pendingCaptureRects=null;
+    }
 
     var pred=predictPlay(_state,handIdx,tableIdxs);
     _gameEngine._lastPredicted=pred;
@@ -1123,7 +1252,8 @@ document.addEventListener('DOMContentLoaded', function(){
 
     // ── Opponent thinking hint ────────────────────────────────────────────
     window.Game.on('bot_thinking', function(){
-        var st  = eng.getState();
+        var engine = window._gameEngine;
+        var st = (engine && engine.getState) ? engine.getState() : null;
         var opp = (st && st.bot_name) ? st.bot_name : 'Opponent';
         var hint = document.getElementById('selection-hint');
         if(hint) hint.textContent = opp + ' is thinking\u2026';
@@ -1132,7 +1262,68 @@ document.addEventListener('DOMContentLoaded', function(){
     });
 
     // ── Chkobba commentary ────────────────────────────────────────────────
+    window.Game.on('card_played', function(data){
+        var engine = window._gameEngine;
+        var st = (engine && engine.getState) ? engine.getState() : null;
+        if(!st || typeof data.seat !== 'number') return;
+        if(data.seat === st.my_seat) return; // Ignore our own play events.
+        // Solo-vs-bot already shows a pre-play pending card via state_snapshot.
+        // Avoid adding a second visual reveal card.
+        if(st.game_mode === 'solo') return;
+        animateOpponentReveal(data.card || null);
+    });
+
     window.Game.on('cards_captured', function(data){
+        var engine = window._gameEngine;
+        var st = (engine && engine.getState) ? engine.getState() : null;
+        var isMine = st && typeof data.seat === 'number' && data.seat === st.my_seat;
+
+        // ── Fly captured cards (and opponent's played card) to the winning pile ──
+        var fromRects;
+        if(isMine){
+            // Human just played: rects were saved in playCard() before the optimistic
+            // DOM wipe, so they're still valid even though the table is already updated.
+            fromRects = _pendingCaptureRects || [];
+            _pendingCaptureRects = null;
+        } else {
+            // Opponent/bot captured: state_snapshot hasn't arrived yet, so
+            // the table cards are still visible in the DOM right now.
+            fromRects = [];
+
+            // Lead with the opponent's played card flying out of their hand —
+            // no flip / no wait, it goes straight into the pile with the capture.
+            var oppHost = document.getElementById('bot-cards');
+            if(oppHost){
+                // Prefer the pending face card (solo mode) so the face the user
+                // already saw is the one that flies; otherwise grab any back.
+                var oppCard = oppHost.querySelector('.bot-capture-card')
+                           || oppHost.querySelector('.card-back')
+                           || oppHost.querySelector('.card');
+                if(oppCard){
+                    fromRects.push(rectObj(oppCard.getBoundingClientRect()));
+                    // Hide the source so it visually transfers to the flying clone
+                    // instead of lingering in the hand zone during the flight.
+                    oppCard.style.visibility = 'hidden';
+                }
+            }
+
+            var captured = data.captured || [];
+            var tcEl = document.getElementById('table-cards');
+            if(tcEl){
+                captured.forEach(function(cardStr){
+                    tcEl.querySelectorAll('.table-card').forEach(function(el){
+                        if(el.dataset.cardStr === cardStr){
+                            fromRects.push(rectObj(el.getBoundingClientRect()));
+                            el.style.visibility = 'hidden';
+                        }
+                    });
+                });
+            }
+        }
+
+        var pileEl = document.getElementById(isMine ? 'player-cap' : 'bot-cap');
+        if(fromRects.length && pileEl) animateCaptureToStack(fromRects, pileEl);
+
         if(data.is_chkobba && window.showCommentaryToast && window.toastsEnabled && window.toastsEnabled())
             window.showCommentaryToast('Mabrouk! \uD83C\uDF89');
     });

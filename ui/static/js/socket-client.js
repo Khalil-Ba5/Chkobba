@@ -74,6 +74,10 @@
         var eng = window._gameEngine;
         if (!eng) return;
 
+        // Save the previous state BEFORE overwriting it, so applyState can
+        // diff old vs new table slots for the capture-fly animation.
+        var prevState = eng.getState ? eng.getState() : null;
+
         eng.setState(data);
         self.lastSeq = data.seq || 0;
 
@@ -91,8 +95,9 @@
           if (eng.reconcile) { eng.reconcile(data); return; }
         }
 
-        // No prediction pending — apply state directly.
-        eng.applyState(data, null);
+        // No prediction pending — apply state directly, passing the previous
+        // state so the capture animation can compare old vs new table cards.
+        eng.applyState(data, null, prevState);
       });
 
       // ------------------------------------------------------------------
