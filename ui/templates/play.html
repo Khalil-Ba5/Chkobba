@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en"{% if opp_first_js_deal|default(false) %} class="chk-opp-first-boot"{% endif %}>
+<html lang="en" dir="ltr"{% if opp_first_js_deal|default(false) %} class="chk-opp-first-boot"{% endif %}>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
@@ -18,7 +18,7 @@
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js" crossorigin="anonymous" integrity="sha384-2huaZvOR9iDzHqslqwpR87isEmrfxqyWOF7hr7BY6KG0+hVKLoEXMPUJw3ynWuhO"></script>
     <script src="{{ static_url('js/socket-client.js') }}"></script>
 </head>
-<body>
+<body{% if not room_not_found and not room_full %} class="session-game"{% endif %}>
 <div id="syncing-dot" aria-hidden="true"></div>
 
 <!-- ════════════════ HUD ════════════════ -->
@@ -45,7 +45,7 @@
         </div>
         {% endif %}
         <div class="hud-score bot">
-            <span class="hs-label">Opp</span>
+            <span class="hs-label">Opponent</span>
             <span class="hs-val">{{ match_scores[1] }}</span>
         </div>
     </div>
@@ -198,9 +198,10 @@
 <!-- ════════════════ GAME BOARD ════════════════ -->
 <div id="game-board-wrap" class="{% if not game_active %}hidden{% endif %}">
 {% if game_active %}
-<p id="selection-hint" class="selection-hint" aria-live="polite">{% if awaiting_cut_choice|default(false) %}{% if is_opening_cutter|default(false) %}Choose: keep the cut card or put it on the table.{% else %}Waiting for your opponent to finish the cut.{% endif %}{% elif opp_first_js_deal|default(false) %}Dealing cards…{% elif human_is_current and not round_over and not has_pending_bot %}Tap a card from your hand to play{% elif not round_over and not has_pending_bot %}Opponent is thinking…{% else %}—{% endif %}</p>
+<div class="game-shell">
+<p id="selection-hint" class="selection-hint" aria-live="polite">{% if awaiting_cut_choice|default(false) %}{% if is_opening_cutter|default(false) %}Choose: keep the cut card in hand or place it on the table.{% else %}Waiting for the dealer to finish the cut…{% endif %}{% elif opp_first_js_deal|default(false) %}Dealing cards…{% elif human_is_current and not round_over and not has_pending_bot %}Tap a card in your hand to play{% elif not round_over and not has_pending_bot %}Opponent is thinking…{% else %}—{% endif %}</p>
 {% endif %}
-<div class="board{% if game_active %}{% if human_is_current and not round_over and not has_pending_bot %} player-active{% elif not round_over and not has_pending_bot %} bot-active{% endif %}{% endif %}" role="application" aria-label="Chkobba game board">
+<div class="board{% if game_active %}{% if human_is_current and not round_over and not has_pending_bot %} player-active{% elif not round_over and not has_pending_bot %} bot-active{% elif has_pending_bot %} bot-active{% endif %}{% endif %}" role="application" aria-label="Chkobba table">
 
     <!-- ── Turn announcement (screen-reader only) ── -->
     <div id="turn-announce" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
@@ -218,6 +219,8 @@
                 {% if opp_first_js_deal|default(false) %}
                 {% elif game_active and not human_is_current and not round_over and not has_pending_bot %}
                     <span class="badge thinking">Thinking…</span>
+                {% elif game_active and has_pending_bot %}
+                    <span class="badge thinking">Playing…</span>
                 {% endif %}
             </span>
         </div>
@@ -245,7 +248,7 @@
         <div class="felt-logo" aria-hidden="true"></div>
         <div class="felt-cards" id="table-cards">
             {% if opp_first_js_deal|default(false) %}
-                <p class="felt-empty">No cards on table</p>
+                <p class="felt-empty">No cards on the table</p>
             {% elif table_slots and (table_slots | map(attribute='card') | select | list) %}
                 {% for i in range(0, table_slots | length, 2) %}
                     {% set bot = table_slots[i] %}
@@ -272,7 +275,7 @@
                     {% endif %}
                 {% endfor %}
             {% else %}
-                <p class="felt-empty">{% if game_active %}No cards on table{% endif %}</p>
+                <p class="felt-empty">{% if game_active %}No cards on the table{% endif %}</p>
             {% endif %}
         </div>
         <div class="deck-badge" aria-label="{{ deck_remaining }} cards in deck">
@@ -326,23 +329,25 @@
          aria-labelledby="cut-choice-title"
          style="display:{% if awaiting_cut_choice|default(false) %}flex{% else %}none{% endif %};">
         <div class="cut-choice-panel">
-            <h2 id="cut-choice-title" class="cut-choice-title">Deck cut</h2>
+            <h2 id="cut-choice-title" class="cut-choice-title">The cut</h2>
             {% if awaiting_cut_choice|default(false) and is_opening_cutter|default(false) and cut_card %}
-            <p class="cut-choice-lead">You play first. This is the top card of the lower half after the cut.</p>
+            <p class="cut-choice-lead">You open. This is the top card of the bottom half after the cut.</p>
             <div id="cut-card-display" class="card cut-card-display {% if '♥' in cut_card or '♦' in cut_card %}red-suit{% endif %}">{{ cut_card }}</div>
             <div class="cut-choice-actions">
                 <button type="button" class="btn-deal" id="cut-keep-btn">Keep in hand</button>
-                <button type="button" class="btn-deal btn-secondary" id="cut-discard-btn">Put on table</button>
+                <button type="button" class="btn-deal btn-secondary" id="cut-discard-btn">Place on table</button>
             </div>
-            <p class="cut-choice-rules"><strong>Keep</strong>: card in your hand + 2 dealt; opponent 3; 4 on table.<br>
-            <strong>Table</strong>: card on table + 3 more on table; you 3; opponent 3.</p>
+            <p class="cut-choice-rules"><strong>Keep</strong>: cut card in your hand + 2 dealt to you; opponent gets 3; 4 on the table.<br>
+            <strong>On table</strong>: cut card on the table + 3 more; you get 3; opponent gets 3.</p>
             {% elif awaiting_cut_choice|default(false) %}
-            <p class="cut-choice-wait">Waiting for your opponent to finish the cut.</p>
+            <p class="cut-choice-wait">Waiting for the dealer to reveal the cut…</p>
             {% endif %}
         </div>
     </div>
 
 </div><!-- /board -->
+
+{% include 'partials/cafe_ambient.html' %}
 
 <!-- ── Move Log ── -->
 {% if last_human_move or last_bot_move %}
@@ -352,11 +357,15 @@
 </div>
 {% endif %}
 
+{% if game_active %}
+</div><!-- /game-shell -->
+{% endif %}
+
 <!-- ── Round Over ── -->
 {% if show_next_round %}
 <div class="notebook-overlay">
     <div class="notebook-card">
-        <div class="nb-title">أرقم! — Chkobba</div>
+        <div class="nb-title">Scoring! — Chkobba</div>
         <div class="nb-subtitle">round results</div>
         <div class="nb-columns">
             <span>You</span>
@@ -579,6 +588,8 @@ var EASE='cubic-bezier(0.22,1,0.36,1)';
 var DEAL_ANIM_MULT=2.35;
 function dealMs(x){ return Math.max(32, Math.round(x/DEAL_ANIM_MULT)); }
 var CSRF=(document.querySelector('meta[name="csrf-token"]')||{}).getAttribute('content')||'';
+function oppPlayingMsg(n){ return (n||'Opponent')+' is playing…'; }
+function oppThinkMsg(n){ return (n||'Opponent')+' is thinking…'; }
 var _busy=false;
 var _state=null;
 var _pendingCaptureEls=null;
@@ -663,9 +674,9 @@ function onServerConfirm(serverState){
         var bcc=bc.querySelector('.bot-capture-card'); if(bcc) enhance(bcc);
     }
     var hint=document.getElementById('selection-hint');
-    if(hint) hint.textContent='Bot is playing\u2026';
+    if(hint) hint.textContent=oppPlayingMsg(serverState.bot_name);
     var bSt=document.querySelector('.opp-zone .zone-status');
-    if(bSt) bSt.innerHTML='<span class="badge thinking">Playing\u2026</span>';
+    if(bSt) bSt.innerHTML='<span class="badge thinking">Playing…</span>';
     scheduleBotTurn(serverState);
 }
 
@@ -731,9 +742,9 @@ function buildHand(cards,sel){
 }
 
 function buildTable(slots,sel,lastCard,lastBy){
-    if(!slots) return '<p class="felt-empty">No cards on table</p>';
+    if(!slots) return '<p class="felt-empty">No cards on the table</p>';
     var hasSome=slots.some(function(s){return s.card;});
-    if(!hasSome) return '<p class="felt-empty">No cards on table</p>';
+    if(!hasSome) return '<p class="felt-empty">No cards on the table</p>';
     var html='';
     for(var i=0; i<slots.length; i+=2){
         var bot=slots[i];
@@ -764,7 +775,7 @@ function buildTable(slots,sel,lastCard,lastBy){
 }
 
 function buildRoundEndTableFromSweepCards(cards){
-    if(!cards||!cards.length) return '<p class="felt-empty">No cards on table</p>';
+    if(!cards||!cards.length) return '<p class="felt-empty">No cards on the table</p>';
     var html='';
     for(var i=0;i<cards.length;i+=2){
         var c0=cards[i], c1=cards[i+1];
@@ -949,7 +960,7 @@ function applyRoundOverPanel(st){
     if(pCap) pCap.innerHTML=buildCapPile(st.human_captured_count);
     if(bCap) bCap.innerHTML=buildCapPile(st.bot_captured_count);
     var tc=document.getElementById('table-cards');
-    if(tc) tc.innerHTML='<p class="felt-empty">No cards on table</p>';
+    if(tc) tc.innerHTML='<p class="felt-empty">No cards on the table</p>';
 }
 
 // ── Deal animation: cards fly one-by-one from the deck to each hand ────────
@@ -1308,7 +1319,7 @@ function applyState(st,snap,prevStateOverride){
     var bc=document.getElementById('bot-cards');
     if(oppOpensFirstDeal){
         document.documentElement.classList.remove('chk-opp-first-boot');
-        if(tc) tc.innerHTML='<p class="felt-empty">No cards on table</p>';
+        if(tc) tc.innerHTML='<p class="felt-empty">No cards on the table</p>';
         if(hc) hc.innerHTML='<span class="zone-empty">No cards</span>';
         if(bc) bc.innerHTML='<span class="zone-empty">No cards</span>';
     }
@@ -1328,8 +1339,8 @@ function applyState(st,snap,prevStateOverride){
     var bStatus=document.querySelector('.opp-zone .zone-status');
     if(bStatus){
         if(oppOpensFirstDeal && !st.awaiting_cut_choice) bStatus.innerHTML='';
-        else if(st.has_pending_bot) bStatus.innerHTML='<span class="badge thinking">Playing\u2026</span>';
-        else if(!st.human_is_current) bStatus.innerHTML='<span class="badge thinking">Thinking\u2026</span>';
+        else if(st.has_pending_bot) bStatus.innerHTML='<span class="badge thinking">Playing…</span>';
+        else if(!st.human_is_current) bStatus.innerHTML='<span class="badge thinking">Thinking…</span>';
         else bStatus.innerHTML='';
     }
     var bCap=document.getElementById('bot-cap');
@@ -1365,10 +1376,10 @@ function applyState(st,snap,prevStateOverride){
     var hint=document.getElementById('selection-hint');
     if(hint){
         if(st.awaiting_cut_choice){
-            hint.textContent=st.is_opening_cutter?'Choose: keep the cut card or put it on the table.':'Waiting for your opponent to finish the cut.';
+            hint.textContent=st.is_opening_cutter?'Choose: keep the cut card in hand or place it on the table.':'Waiting for the dealer to finish the cut…';
         } else {
-            if(oppOpensFirstDeal) hint.textContent='Dealing cards\u2026';
-            else hint.textContent=st.has_pending_bot?'Opponent is playing\u2026':(human?'Tap a card from your hand to play':(oppName+' is thinking\u2026'));
+            if(oppOpensFirstDeal) hint.textContent='Dealing cards…';
+            else hint.textContent=st.has_pending_bot?oppPlayingMsg(oppName):(human?'Tap a card in your hand to play':oppThinkMsg(oppName));
         }
     }
     var playForm=document.getElementById('play-form');
@@ -1412,13 +1423,13 @@ function applyState(st,snap,prevStateOverride){
                 }
                 var hintEl=document.getElementById('selection-hint');
                 if(hintEl && !st.awaiting_cut_choice){
-                    if(st.has_pending_bot) hintEl.textContent='Opponent is playing\u2026';
-                    else hintEl.textContent=human?'Tap a card from your hand to play':(oppName+' is thinking\u2026');
+                    if(st.has_pending_bot) hintEl.textContent=oppPlayingMsg(oppName);
+                    else hintEl.textContent=human?'Tap a card in your hand to play':oppThinkMsg(oppName);
                 }
                 var bStEl=document.querySelector('.opp-zone .zone-status');
                 if(bStEl && !st.awaiting_cut_choice){
-                    if(st.has_pending_bot) bStEl.innerHTML='<span class="badge thinking">Playing\u2026</span>';
-                    else if(!st.human_is_current) bStEl.innerHTML='<span class="badge thinking">Thinking\u2026</span>';
+                    if(st.has_pending_bot) bStEl.innerHTML='<span class="badge thinking">Playing…</span>';
+                    else if(!st.human_is_current) bStEl.innerHTML='<span class="badge thinking">Thinking…</span>';
                     else bStEl.innerHTML='';
                 }
             }
@@ -1601,7 +1612,7 @@ function attachListeners(captureMap){
     }
     function reset(){
         selHand=null; selHandEl=null; selTable.clear(); valid=false;
-        clearHL(); tip('Tap a card from your hand to play');
+        clearHL(); tip('Tap a card in your hand to play');
     }
     function highlight(opts){
         var all=new Set();
@@ -1618,8 +1629,8 @@ function attachListeners(captureMap){
         if(selHand===null){valid=false;return;}
         var arr=Array.from(selTable);
         valid=Boolean(findMatch(selHand,arr));
-        if(valid) tip(arr.length===0?'Playing to table\u2026':'Valid capture \u2014 tap Play');
-        else      tip(arr.length===0?'Tap a table card to capture':'Invalid selection \u2014 try again');
+        if(valid) tip(arr.length===0?'Playing to the table…':'Valid capture — tap Play');
+        else      tip(arr.length===0?'Tap a table card to capture':'Invalid selection — try again');
     }
 
     hCards.forEach(function(card){
@@ -1628,7 +1639,7 @@ function attachListeners(captureMap){
             reset(); selHand=idx; selHandEl=this; this.classList.add('selected');
             var opts=(captureMap[idx]||[]).filter(function(o){return o.is_capture;});
             if(opts.length===0){
-                valid=true; selTable.clear(); tip('Playing to table\u2026');
+                valid=true; selTable.clear(); tip('Playing to the table…');
                 playCard(parseInt(idx),[],this,null,false,false);
                 return;
             }
@@ -1638,14 +1649,14 @@ function attachListeners(captureMap){
 
     tCards.forEach(function(card){
         card.addEventListener('click',function(){
-            if(selHand===null){tip('Tap a card from your hand first');return;}
+            if(selHand===null){tip('Tap a card in your hand first');return;}
             if(!this.classList.contains('valid-capture')){tip('Not part of a valid capture');return;}
             var idx=parseInt(this.dataset.tableIndex,10);
             if(selTable.has(idx)){selTable.delete(idx);this.classList.remove('selected');}
             else{selTable.add(idx);this.classList.add('selected');}
             refresh();
             if(valid){
-                tip('Playing move\u2026');
+                tip('Playing move…');
                 var selT=Array.from(tCards).filter(function(c){return c.classList.contains('selected');});
                 var allNE=Array.from(document.querySelectorAll('#table-cards .table-card:not(.table-slot-empty)'));
                 var isChk=selT.length>0&&selT.length===allNE.length;
@@ -1671,12 +1682,12 @@ function attachListeners(captureMap){
 
     if(oppOpensFirstInit){
         var tc0=document.getElementById('table-cards'), hc0=document.getElementById('hand-cards'), bc0=document.getElementById('bot-cards');
-        if(tc0) tc0.innerHTML='<p class="felt-empty">No cards on table</p>';
+        if(tc0) tc0.innerHTML='<p class="felt-empty">No cards on the table</p>';
         if(hc0) hc0.innerHTML='<span class="zone-empty">No cards</span>';
         if(bc0) bc0.innerHTML='<span class="zone-empty">No cards</span>';
         document.documentElement.classList.remove('chk-opp-first-boot');
         var hint0=document.getElementById('selection-hint');
-        if(hint0) hint0.textContent='Dealing cards\u2026';
+        if(hint0) hint0.textContent='Dealing cards…';
         var bSt0=document.querySelector('.opp-zone .zone-status');
         if(bSt0) bSt0.innerHTML='';
     }
@@ -1719,13 +1730,13 @@ function attachListeners(captureMap){
                 var hint1=document.getElementById('selection-hint');
                 var oppNm2=ps.bot_name||'Opponent';
                 if(hint1 && !ps.awaiting_cut_choice){
-                    if(ps.has_pending_bot) hint1.textContent='Opponent is playing\u2026';
-                    else hint1.textContent=ps.human_is_current?'Tap a card from your hand to play':(oppNm2+' is thinking\u2026');
+                    if(ps.has_pending_bot) hint1.textContent=oppPlayingMsg(oppNm2);
+                    else hint1.textContent=ps.human_is_current?'Tap a card in your hand to play':oppThinkMsg(oppNm2);
                 }
                 var bSt1=document.querySelector('.opp-zone .zone-status');
                 if(bSt1 && !ps.awaiting_cut_choice){
-                    if(ps.has_pending_bot) bSt1.innerHTML='<span class="badge thinking">Playing\u2026</span>';
-                    else if(!ps.human_is_current) bSt1.innerHTML='<span class="badge thinking">Thinking\u2026</span>';
+                    if(ps.has_pending_bot) bSt1.innerHTML='<span class="badge thinking">Playing…</span>';
+                    else if(!ps.human_is_current) bSt1.innerHTML='<span class="badge thinking">Thinking…</span>';
                     else bSt1.innerHTML='';
                 }
             }
@@ -1945,9 +1956,9 @@ document.addEventListener('DOMContentLoaded', function(){
         var st = (engine && engine.getState) ? engine.getState() : null;
         var opp = (st && st.bot_name) ? st.bot_name : 'Opponent';
         var hint = document.getElementById('selection-hint');
-        if(hint) hint.textContent = opp + ' is thinking\u2026';
+        if(hint) hint.textContent = oppThinkMsg(opp);
         var bSt = document.querySelector('.opp-zone .zone-status');
-        if(bSt) bSt.innerHTML = '<span class="badge thinking">Thinking\u2026</span>';
+        if(bSt) bSt.innerHTML = '<span class="badge thinking">Thinking…</span>';
     });
 
     // ── Chkobba commentary ────────────────────────────────────────────────

@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en"{% if opp_first_js_deal|default(false) %} class="chk-opp-first-boot"{% endif %}>
+<html lang="en" dir="ltr"{% if opp_first_js_deal|default(false) %} class="chk-opp-first-boot"{% endif %}>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
@@ -20,7 +20,7 @@
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js" crossorigin="anonymous" integrity="sha384-2huaZvOR9iDzHqslqwpR87isEmrfxqyWOF7hr7BY6KG0+hVKLoEXMPUJw3ynWuhO"></script>
     <script src="{{ static_url('js/socket-client.js') }}"></script>
 </head>
-<body>
+<body{% if not show_start_screen %} class="session-game"{% endif %}>
 <div id="syncing-dot" aria-hidden="true"></div>
 
 <!-- ════════════════ HUD ════════════════ -->
@@ -150,8 +150,9 @@
 
 {% else %}
 <!-- ════════════════ GAME BOARD ════════════════ -->
-<p id="selection-hint" class="selection-hint" aria-live="polite">{% if awaiting_cut_choice|default(false) %}{% if is_opening_cutter|default(false) %}Choose: keep the cut card or put it on the table.{% else %}Waiting for your opponent to finish the cut.{% endif %}{% elif opp_first_js_deal|default(false) %}Dealing cards…{% else %}Tap a card from your hand to play{% endif %}</p>
-<div class="board{% if human_is_current and not round_over and not has_pending_bot %} player-active{% elif not round_over and not has_pending_bot and not human_is_current %} bot-active{% elif has_pending_bot %} bot-active{% endif %}" role="application" aria-label="Chkobba game board">
+<div class="game-shell">
+<p id="selection-hint" class="selection-hint" aria-live="polite">{% if awaiting_cut_choice|default(false) %}{% if is_opening_cutter|default(false) %}Choose: keep the cut card in hand or place it on the table.{% else %}Waiting for the dealer to finish the cut…{% endif %}{% elif opp_first_js_deal|default(false) %}Dealing cards…{% else %}Tap a card in your hand to play{% endif %}</p>
+<div class="board{% if human_is_current and not round_over and not has_pending_bot %} player-active{% elif not round_over and not has_pending_bot and not human_is_current %} bot-active{% elif has_pending_bot %} bot-active{% endif %}" role="application" aria-label="Chkobba table">
 
     <!-- ── Turn announcement (screen-reader only) ── -->
     <div id="turn-announce" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
@@ -198,11 +199,10 @@
     <!-- ── Felt Table (only table cards) ── -->
     <div class="felt">
         <span class="felt-label">Table</span>
-        <!-- Brand watermark — rendered behind the cards via z-index -->
         <div class="felt-logo" aria-hidden="true"></div>
         <div class="felt-cards" id="table-cards">
             {% if opp_first_js_deal|default(false) %}
-                <p class="felt-empty">No cards on table</p>
+                <p class="felt-empty">No cards on the table</p>
             {% elif table_slots and (table_slots | map(attribute='card') | select | list) %}
                 {% for i in range(0, table_slots | length, 2) %}
                     {% set bot = table_slots[i] %}
@@ -229,7 +229,7 @@
                     {% endif %}
                 {% endfor %}
             {% else %}
-                <p class="felt-empty">No cards on table</p>
+                <p class="felt-empty">No cards on the table</p>
             {% endif %}
         </div>
         <div class="deck-badge" aria-label="{{ deck_remaining }} cards in deck">
@@ -284,23 +284,25 @@
          aria-labelledby="cut-choice-title"
          style="display:{% if awaiting_cut_choice|default(false) %}flex{% else %}none{% endif %};">
         <div class="cut-choice-panel">
-            <h2 id="cut-choice-title" class="cut-choice-title">Deck cut</h2>
+            <h2 id="cut-choice-title" class="cut-choice-title">The cut</h2>
             {% if awaiting_cut_choice|default(false) and is_opening_cutter|default(false) and cut_card %}
-            <p class="cut-choice-lead">You play first. This is the top card of the lower half after the cut.</p>
+            <p class="cut-choice-lead">You open. This is the top card of the bottom half after the cut.</p>
             <div id="cut-card-display" class="card cut-card-display {% if '♥' in cut_card or '♦' in cut_card %}red-suit{% endif %}">{{ cut_card }}</div>
             <div class="cut-choice-actions">
                 <button type="button" class="btn-deal" id="cut-keep-btn" data-keep="true">Keep in hand</button>
-                <button type="button" class="btn-deal btn-secondary" id="cut-discard-btn" data-keep="false">Put on table</button>
+                <button type="button" class="btn-deal btn-secondary" id="cut-discard-btn" data-keep="false">Place on table</button>
             </div>
-            <p class="cut-choice-rules"><strong>Keep</strong>: card in your hand + 2 dealt; opponent 3; 4 on table.<br>
-            <strong>Table</strong>: card on table + 3 more on table; you 3; opponent 3.</p>
+            <p class="cut-choice-rules"><strong>Keep</strong>: cut card in your hand + 2 dealt to you; opponent gets 3; 4 on the table.<br>
+            <strong>On table</strong>: cut card on the table + 3 more; you get 3; opponent gets 3.</p>
             {% elif awaiting_cut_choice|default(false) %}
-            <p class="cut-choice-wait">Waiting for the dealer to finish the opening deal…</p>
+            <p class="cut-choice-wait">Waiting for the dealer to reveal the cut…</p>
             {% endif %}
         </div>
     </div>
 
 </div><!-- /board -->
+
+{% include 'partials/cafe_ambient.html' %}
 
 <!-- ── Move Log ── -->
 {% if last_human_move or last_bot_move %}
@@ -309,6 +311,8 @@
     {% if last_bot_move %}<span class="log-bot">Bot {{ last_bot_move }}</span>{% endif %}
 </div>
 {% endif %}
+
+</div><!-- /game-shell -->
 
 <!-- ── Debug ── -->
 {% if debug and move_buttons and not round_over %}
@@ -336,7 +340,7 @@
 <div class="notebook-overlay">
     <div class="notebook-card">
 
-        <div class="nb-title">أرقم! — Chkobba</div>
+        <div class="nb-title">Scoring! — Chkobba</div>
         <div class="nb-subtitle">round results</div>
 
         <div class="nb-columns">
@@ -675,9 +679,9 @@ function onServerConfirm(serverState){
         var bcc = bc.querySelector('.bot-capture-card'); if(bcc) enhance(bcc);
     }
     var hint = document.getElementById('selection-hint');
-    if(hint) hint.textContent = 'Bot is playing\u2026';
+    if(hint) hint.textContent = 'Bot is playing…';
     var bSt = document.querySelector('.opp-zone .zone-status');
-    if(bSt) bSt.innerHTML = '<span class="badge thinking">Playing\u2026</span>';
+    if(bSt) bSt.innerHTML = '<span class="badge thinking">Playing…</span>';
 
     scheduleBotTurn(serverState);
 }
@@ -1052,9 +1056,9 @@ function buildHand(cards, sel){
 
 // Build table HTML: each column is two stacked slots (top then bottom); cards fill in slot order
 function buildTable(slots, sel, lastCard, lastBy){
-    if(!slots) return '<p class="felt-empty">No cards on table</p>';
+    if(!slots) return '<p class="felt-empty">No cards on the table</p>';
     var hasSome = slots.some(function(s){return s.card;});
-    if(!hasSome) return '<p class="felt-empty">No cards on table</p>';
+    if(!hasSome) return '<p class="felt-empty">No cards on the table</p>';
     var html='';
     for(var i=0; i<slots.length; i+=2){
         var bot=slots[i];
@@ -1086,7 +1090,7 @@ function buildTable(slots, sel, lastCard, lastBy){
 
 /** Table DOM for round-end sweep when server snapshot has already cleared table_cards. */
 function buildRoundEndTableFromSweepCards(cards){
-    if(!cards || !cards.length) return '<p class="felt-empty">No cards on table</p>';
+    if(!cards || !cards.length) return '<p class="felt-empty">No cards on the table</p>';
     var html = '';
     for(var i = 0; i < cards.length; i += 2){
         var c0 = cards[i], c1 = cards[i + 1];
@@ -1373,7 +1377,7 @@ function applyState(st, snap, prevState){
     var bc=document.getElementById('bot-cards');
     if(oppOpensFirstDeal){
         document.documentElement.classList.remove('chk-opp-first-boot');
-        if(tc) tc.innerHTML='<p class="felt-empty">No cards on table</p>';
+        if(tc) tc.innerHTML='<p class="felt-empty">No cards on the table</p>';
         if(hc) hc.innerHTML='<span class="zone-empty">No cards</span>';
         if(bc) bc.innerHTML='<span class="zone-empty">No cards</span>';
     }
@@ -1437,11 +1441,11 @@ function applyState(st, snap, prevState){
     var hint=document.getElementById('selection-hint');
     if(hint){
         if(st.awaiting_cut_choice){
-            hint.textContent=st.is_opening_cutter?'Choose: keep the cut card or put it on the table.':'Waiting for your opponent to finish the cut.';
+            hint.textContent=st.is_opening_cutter?'Choose: keep the cut card in hand or place it on the table.':'Waiting for the dealer to finish the cut…';
         } else {
             if(oppOpensFirstDeal) hint.textContent='Dealing cards…';
             else hint.textContent=st.has_pending_bot?'Bot is playing…':
-                (!st.human_is_current?'Bot is thinking…':'Tap a card from your hand to play');
+                (!st.human_is_current?'Bot is thinking…':'Tap a card in your hand to play');
         }
     }
     var playForm=document.getElementById('play-form');
@@ -1493,7 +1497,7 @@ function applyState(st, snap, prevState){
                 var hintEl = document.getElementById('selection-hint');
                 if(hintEl && !st.awaiting_cut_choice){
                     if(st.has_pending_bot) hintEl.textContent = 'Bot is playing…';
-                    else hintEl.textContent = !st.human_is_current ? 'Bot is thinking…' : 'Tap a card from your hand to play';
+                    else hintEl.textContent = !st.human_is_current ? 'Bot is thinking…' : 'Tap a card in your hand to play';
                 }
                 var bStEl = document.querySelector('.opp-zone .zone-status');
                 if(bStEl && !st.awaiting_cut_choice){
@@ -1754,7 +1758,7 @@ function attachListeners(captureMap){
         selHand=null; selHandEl=null; selTable.clear(); valid=false;
         if(hIn) hIn.value=''; if(tIn) tIn.value='';
         if(playBtn) playBtn.disabled=true;
-        clearHL(); tip('Tap a card from your hand to play');
+        clearHL(); tip('Tap a card in your hand to play');
     }
     function sync(){
         if(hIn) hIn.value=selHand!=null?selHand:'';
@@ -1776,7 +1780,7 @@ function attachListeners(captureMap){
         if(selHand===null){valid=false;sync();return;}
         var arr=Array.from(selTable);
         valid=Boolean(findMatch(selHand,arr)); sync();
-        if(valid) tip(arr.length===0?'Playing to table…':'Valid capture — tap Play');
+        if(valid) tip(arr.length===0?'Playing to the table…':'Valid capture — tap Play');
         else      tip(arr.length===0?'Tap a table card to capture':'Invalid selection — try again');
     }
 
@@ -1786,7 +1790,7 @@ function attachListeners(captureMap){
             reset(); selHand=idx; selHandEl=this; this.classList.add('selected');
             var opts=(captureMap[idx]||[]).filter(function(o){return o.is_capture;});
             if(opts.length===0){
-                valid=true; selTable.clear(); sync(); tip('Playing to table…');
+                valid=true; selTable.clear(); sync(); tip('Playing to the table…');
                 playCard(parseInt(idx),[],this,null,false,false);
                 return;
             }
@@ -1796,7 +1800,7 @@ function attachListeners(captureMap){
 
     tCards.forEach(function(card){
         card.addEventListener('click',function(){
-            if(selHand===null){tip('Tap a card from your hand first');return;}
+            if(selHand===null){tip('Tap a card in your hand first');return;}
             if(!this.classList.contains('valid-capture')){tip('Not part of a valid capture');return;}
             var idx=parseInt(this.dataset.tableIndex,10);
             if(selTable.has(idx)){selTable.delete(idx);this.classList.remove('selected');}
@@ -1843,7 +1847,7 @@ function attachListeners(captureMap){
 
     if(oppOpensFirstInit){
         var tcE0 = document.getElementById('table-cards'), hcE0 = document.getElementById('hand-cards'), bcE0 = document.getElementById('bot-cards');
-        if(tcE0) tcE0.innerHTML = '<p class="felt-empty">No cards on table</p>';
+        if(tcE0) tcE0.innerHTML = '<p class="felt-empty">No cards on the table</p>';
         if(hcE0) hcE0.innerHTML = '<span class="zone-empty">No cards</span>';
         if(bcE0) bcE0.innerHTML = '<span class="zone-empty">No cards</span>';
         document.documentElement.classList.remove('chk-opp-first-boot');
@@ -1895,7 +1899,7 @@ function attachListeners(captureMap){
                 var hint1 = document.getElementById('selection-hint');
                 if(hint1 && !ps.awaiting_cut_choice){
                     if(ps.has_pending_bot) hint1.textContent = 'Bot is playing…';
-                    else hint1.textContent = !ps.human_is_current ? 'Bot is thinking…' : 'Tap a card from your hand to play';
+                    else hint1.textContent = !ps.human_is_current ? 'Bot is thinking…' : 'Tap a card in your hand to play';
                 }
                 var bSt1 = document.querySelector('.opp-zone .zone-status');
                 if(bSt1 && !ps.awaiting_cut_choice){
@@ -1975,7 +1979,7 @@ document.addEventListener('DOMContentLoaded', function(){
         var botName = (st && st.bot_name) || 'Bot';
         if(hint) hint.textContent = botName + ' is thinking\u2026';
         var bSt = document.querySelector('.opp-zone .zone-status');
-        if(bSt) bSt.innerHTML = '<span class="badge thinking">Thinking\u2026</span>';
+        if(bSt) bSt.innerHTML = '<span class="badge thinking">Thinking…</span>';
     });
 
     window.Game.on('cards_captured', function(data){

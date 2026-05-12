@@ -28,6 +28,8 @@ html { height: 100%; }
     --orange:     #e8883a;
     --blue:       #5bc8f5;
     --trans:      .15s ease;
+    /* Wood table photo — Unsplash (Zoshua Colah), Unsplash License */
+    --wood-texture: url('https://images.unsplash.com/photo-1763392199096-6efd9d28d8cc?auto=format&fit=crop&w=1920&q=75');
 }
 
 /* ─── Base ─── */
@@ -40,6 +42,21 @@ body {
     display: flex;
     flex-direction: column;
     overflow-x: hidden;
+}
+
+/* Walnut table mood (active game / play room) — felt stays default `.felt` */
+body.session-game {
+    background-color: #161008;
+    background-image:
+        linear-gradient(165deg, rgba(32, 18, 12, 0.88) 0%, rgba(24, 14, 9, 0.55) 42%, rgba(18, 10, 6, 0.78) 100%),
+        var(--wood-texture);
+    background-size: cover, cover;
+    background-position: center, center;
+    background-attachment: fixed, fixed;
+}
+body.session-game .hud {
+    background: rgba(18, 10, 6, 0.93);
+    border-bottom-color: rgba(212, 175, 55, 0.22);
 }
 button, a { font: inherit; cursor: pointer; text-decoration: none; }
 button { border: none; outline: none; }
@@ -359,13 +376,73 @@ button { border: none; outline: none; }
     will-change: transform;
 }
 
-/* ── Hand zones (above / below the felt) — static sizes, no transitions ── */
+.game-shell {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    width: 100%;
+    max-width: 800px;
+    margin: 0 auto;
+    position: relative;
+}
+
+.cafe-ambient {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 6;
+}
+.cafe-prop {
+    position: absolute;
+    opacity: 0.42;
+    filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.35));
+}
+.cafe-prop svg {
+    width: 100%;
+    height: auto;
+    display: block;
+}
+.cafe-prop--tea {
+    width: min(88px, 22vw);
+    top: 6%;
+    left: 1%;
+    transform: rotate(-6deg);
+}
+.cafe-prop--jasmine {
+    width: min(100px, 24vw);
+    top: 10%;
+    right: 0;
+    transform: rotate(8deg);
+}
+.cafe-prop--cigarettes {
+    width: min(72px, 20vw);
+    bottom: 14%;
+    right: 2%;
+    transform: rotate(-4deg);
+    opacity: 0.36;
+}
+
+@media (max-width: 520px) {
+    .cafe-prop { opacity: 0.28; }
+    .cafe-prop--tea { width: min(64px, 20vw); top: 4%; }
+    .cafe-prop--jasmine { width: min(72px, 22vw); }
+    .cafe-prop--cigarettes { width: min(56px, 18vw); bottom: 10%; }
+}
+
+body.session-game .felt.chkobba-flash {
+    box-shadow:
+        0 0 55px rgba(255, 204, 120, 0.55),
+        inset 0 0 70px rgba(0, 0, 0, 0.45),
+        0 10px 32px rgba(0, 0, 0, 0.5);
+    border-color: rgba(255, 214, 140, 0.55);
+}
 .zone {
     display: flex; flex-direction: column; gap: .35rem;
     border-radius: 16px;
     padding: .6rem .85rem;
-    background: rgba(0,0,0,.22);
-    border: 1px solid rgba(255,255,255,.09);
+    background: transparent;
+    border: 1px solid rgba(255,255,255,.08);
     flex-shrink: 0;
     contain: layout style;
     min-height: 140px;
@@ -479,19 +556,18 @@ html.chk-opp-first-boot #bot-cards {
     font-weight: 700;
 }
 
-/* ── Brand watermark ── */
+/* ── Brand watermark (orchom logo as mask) ── */
 .felt-logo {
     position: absolute;
     top: 50%; left: 50%;
     transform: translate(-50%, -50%);
-    /* gold colour; the SVG shape is applied as a CSS mask so currentColor is honoured */
     width: 260px; height: 260px;
     background-color: #c9a961;
     -webkit-mask: url('/static/orchom-chkobba-logo.svg') center / contain no-repeat;
     mask:          url('/static/orchom-chkobba-logo.svg') center / contain no-repeat;
     opacity: .22;
     pointer-events: none;
-    z-index: 0;           /* behind .felt-cards which sits at z-index:1 */
+    z-index: 0;
     flex-shrink: 0;
 }
 @media (max-width: 600px) {
