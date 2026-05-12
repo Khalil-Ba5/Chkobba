@@ -4,13 +4,13 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>Chkobba — 1v1</title>
-    <link rel="icon" href="data:,">
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='2' y='2' width='28' height='28' rx='4' fill='%23faf6ed' stroke='%23cfc4b0'/%3E%3Ctext x='16' y='24' text-anchor='middle' font-size='22' fill='%23c1272d'%3E%E2%99%A6%3C/text%3E%3C/svg%3E">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@700;900&family=Inter:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Caveat:wght@400;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="{{ static_url('style.css') }}">
     <meta name="csrf-token" content="{{ csrf_token() }}">
-    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js" crossorigin="anonymous" integrity="sha384-2huaZvOR9iDzHqslqwpR87isEmrfxqyWOF7hr7BY6KG0+hVKLoEXMPUJw3ynWuhO"></script>
     <script src="{{ static_url('js/socket-client.js') }}"></script>
 </head>
 <body>
@@ -192,10 +192,13 @@
 
 <!-- ════════════════ GAME BOARD ════════════════ -->
 <div id="game-board-wrap" class="{% if not game_active %}hidden{% endif %}">
-<div class="board{% if game_active %}{% if human_is_current and not round_over and not has_pending_bot %} player-active{% elif not round_over and not has_pending_bot %} bot-active{% endif %}{% endif %}">
+<div class="board{% if game_active %}{% if human_is_current and not round_over and not has_pending_bot %} player-active{% elif not round_over and not has_pending_bot %} bot-active{% endif %}{% endif %}" role="application" aria-label="Chkobba game board">
+
+    <!-- ── Turn announcement (screen-reader only) ── -->
+    <div id="turn-announce" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
 
     <!-- ── Opponent Zone ── -->
-    <div class="zone opp-zone">
+    <div class="zone opp-zone" aria-label="Opponent zone">
         <div class="zone-meta">
             <span class="zone-name opp-name">
                 <span class="conn-dot conn-dot-opp" id="opp-conn-dot" title="Opponent connection"></span>
@@ -215,9 +218,10 @@
                 {% if bot_hand_count == 0 and game_active %}<span class="zone-empty">No cards</span>{% endif %}
             </div>
             {% set cap_layers = 5 if bot_captured_count >= 20 else (4 if bot_captured_count >= 12 else (3 if bot_captured_count >= 5 else (2 if bot_captured_count >= 2 else (1 if bot_captured_count >= 1 else 0)))) %}
-            <div class="cap-pile" id="bot-cap" aria-hidden="true">
+            <div class="cap-pile" id="bot-cap">
                 {% for _ in range(cap_layers) %}<div class="card card-back pile-card"></div>{% endfor %}
-                {% if bot_captured_count > 0 %}<span class="cap-count">{{ bot_captured_count }}</span>{% endif %}
+                {% if bot_captured_count > 0 %}<span class="cap-count" aria-hidden="true">{{ bot_captured_count }}</span>{% endif %}
+                <span class="sr-only">{{ bot_captured_count }} cards captured</span>
             </div>
         </div>
     </div>
@@ -230,7 +234,7 @@
             {% if table_slots and (table_slots | map(attribute='card') | select | list) %}
                 {% for slot in table_slots %}
                     {% if slot.card %}
-                    <div class="card table-card {% if '♥' in slot.card or '♦' in slot.card %}red-suit{% endif %}{% if human_is_current and not round_over and not has_pending_bot %} selectable{% endif %}"
+                    <div class="card table-card {% if '♥' in slot.card or '♦' in slot.card %}red-suit{% endif %}{% if human_is_current and not round_over and not has_pending_bot %} selectable{% endif %}{% if slot.card == last_played_card and last_played_by == 'human' %} fly-from-human{% endif %}{% if slot.card == last_played_card and last_played_by == 'bot' %} fly-from-bot{% endif %}"
                         data-table-index="{{ slot.table_index }}"
                         data-card-str="{{ slot.card }}">{{ slot.card }}</div>
                     {% else %}
@@ -253,12 +257,13 @@
     </div>
 
     <!-- ── Player Zone ── -->
-    <div class="zone player-zone{% if game_active and human_is_current and not round_over and not has_pending_bot %} your-turn{% endif %}">
+    <div class="zone player-zone{% if game_active and human_is_current and not round_over and not has_pending_bot %} your-turn{% endif %}" aria-label="Your zone">
         <div class="zone-hand-row">
             {% set cap_layers = 5 if human_captured_count >= 20 else (4 if human_captured_count >= 12 else (3 if human_captured_count >= 5 else (2 if human_captured_count >= 2 else (1 if human_captured_count >= 1 else 0)))) %}
-            <div class="cap-pile" id="player-cap" aria-hidden="true">
+            <div class="cap-pile" id="player-cap">
                 {% for _ in range(cap_layers) %}<div class="card card-back pile-card"></div>{% endfor %}
-                {% if human_captured_count > 0 %}<span class="cap-count">{{ human_captured_count }}</span>{% endif %}
+                {% if human_captured_count > 0 %}<span class="cap-count" aria-hidden="true">{{ human_captured_count }}</span>{% endif %}
+                <span class="sr-only">{{ human_captured_count }} cards captured</span>
             </div>
             <div class="zone-cards" id="hand-cards">
                 {% if human_hand %}
@@ -275,7 +280,7 @@
             <span class="zone-stats"><span class="chk-star">{{ human_chkobbas }}✦</span></span>
             <span class="zone-name player-name">
                 <span class="avatar-dot" style="background:{{ avatar_color }}">{{ avatar_initial }}</span>
-                <span>{{ display_name }}</span>
+                <span id="zone-display-name">{{ display_name }}</span>
             </span>
             <span class="zone-status">
                 {% if game_active and human_is_current and not round_over and not has_pending_bot %}
@@ -286,6 +291,14 @@
     </div>
 
 </div><!-- /board -->
+
+<!-- ── Move Log ── -->
+{% if last_human_move or last_bot_move %}
+<div class="move-log">
+    {% if last_human_move %}<span class="log-you">You {{ last_human_move }}</span>{% endif %}
+    {% if last_bot_move %}<span class="log-bot">{{ bot_name }} {{ last_bot_move }}</span>{% endif %}
+</div>
+{% endif %}
 
 <!-- ── Round Over ── -->
 {% if show_next_round %}
@@ -475,7 +488,7 @@
         });
     }
     function playTakSound(){
-        try{var a=new Audio('/static/sounds/tak.mp3');a.volume=0.5;a.play().catch(function(){});}catch(e){}
+        try{var a=new Audio('/static/sounds/tak.mp3');a.volume=0.5;a.onerror=function(){};a.play().catch(function(){});}catch(e){}
     }
     window.chkobbaAnimation=function(centerEl,onComplete){
         var r=(typeof centerEl.getBoundingClientRect==='function')?centerEl.getBoundingClientRect():centerEl;
@@ -497,7 +510,9 @@ var EASE='cubic-bezier(0.22,1,0.36,1)';
 var CSRF=(document.querySelector('meta[name="csrf-token"]')||{}).getAttribute('content')||'';
 var _busy=false;
 var _state=null;
-var _pendingCaptureRects=null; // rects snapshotted in playCard before optimistic DOM wipe
+var _pendingCaptureRects=null;
+var _prevHumanHandLen=0;
+var _prevBotHandCount=0;
 
 function _placeOptimistic(slots,card,isHuman){
     var par=isHuman?1:0;
@@ -763,6 +778,63 @@ function animateCaptureToStack(fromRects, targetEl) {
     });
 }
 
+// ── Deal animation: cards fly one-by-one from the deck to each hand ────────
+function animateDeal(st){
+    var deck=document.querySelector('.deck-stack');
+    if(!deck) return;
+    var dr=deck.getBoundingClientRect();
+    var deckX=dr.left+dr.width/2;
+    var deckY=dr.top+dr.height/2;
+
+    var botCards=Array.from(document.querySelectorAll('#bot-cards .card:not(.bot-capture-card)'));
+    var humanCards=Array.from(document.querySelectorAll('#hand-cards .card'));
+
+    var seq=[];
+    var maxLen=Math.max(botCards.length, humanCards.length);
+    for(var i=0; i<maxLen; i++){
+        if(botCards[i]) seq.push({el: botCards[i], isBot: true});
+        if(humanCards[i]) seq.push({el: humanCards[i], isBot: false});
+    }
+    if(!seq.length) return;
+
+    seq.forEach(function(item){ item.el.style.visibility='hidden'; });
+
+    seq.forEach(function(item, idx){
+        setTimeout(function(){
+            var r=item.el.getBoundingClientRect();
+            var clone=document.createElement('div');
+            clone.className='card card-back';
+            clone.style.position='fixed';
+            clone.style.left=(deckX - r.width/2)+'px';
+            clone.style.top=(deckY - r.height/2)+'px';
+            clone.style.width=r.width+'px';
+            clone.style.height=r.height+'px';
+            clone.style.margin='0';
+            clone.style.zIndex='999';
+            clone.style.transition='transform 500ms cubic-bezier(.25, .85, .35, 1)';
+            clone.style.pointerEvents='none';
+            clone.style.opacity='1';
+            clone.style.boxShadow='0 6px 18px rgba(0,0,0,.5)';
+            document.body.appendChild(clone);
+
+            var tx=(r.left+r.width/2)-deckX;
+            var ty=(r.top+r.height/2)-deckY;
+            var rot=item.isBot?-8:8;
+
+            requestAnimationFrame(function(){
+                requestAnimationFrame(function(){
+                    clone.style.transform='translate('+tx.toFixed(1)+'px,'+ty.toFixed(1)+'px) rotate('+rot+'deg)';
+                });
+            });
+
+            setTimeout(function(){
+                if(clone.parentNode) clone.parentNode.removeChild(clone);
+                item.el.style.visibility='visible';
+            }, 500);
+        }, idx * 250);
+    });
+}
+
 function takeSnap(fromEl,isBot){
     var snap={played:null,bot:null,table:{}};
     if(fromEl){
@@ -806,7 +878,7 @@ function applyState(st,snap,prevStateOverride){
     var bStats=document.querySelector('.opp-zone .zone-stats');
     if(bStats) bStats.innerHTML='<span class="chk-star">'+st.bot_chkobbas+'✦</span>';
     var bStatus=document.querySelector('.opp-zone .zone-status');
-    if(bStatus) bStatus.innerHTML=!st.human_is_current?'<span class="badge thinking">Thinking\u2026</span>':'';
+    if(bStatus) bStatus.innerHTML=st.has_pending_bot?'<span class="badge thinking">Playing\u2026</span>':(!st.human_is_current?'<span class="badge thinking">Thinking\u2026</span>':'');
     var bCap=document.getElementById('bot-cap');
     if(bCap) bCap.innerHTML=buildCapPile(st.bot_captured_count);
 
@@ -838,7 +910,7 @@ function applyState(st,snap,prevStateOverride){
     if(pStatus) pStatus.innerHTML=human?'<span class="badge your-turn-badge">Your turn</span>':'';
 
     var hint=document.getElementById('selection-hint');
-    if(hint) hint.textContent=human?'Tap a card from your hand to play':(oppName+' is thinking\u2026');
+    if(hint) hint.textContent=st.has_pending_bot?'Opponent is playing\u2026':(human?'Tap a card from your hand to play':(oppName+' is thinking\u2026'));
     var playForm=document.getElementById('play-form');
     if(playForm) playForm.style.display=human?'':'none';
 
@@ -860,6 +932,13 @@ function applyState(st,snap,prevStateOverride){
         bc.innerHTML=buildBotHand(st.bot_hand_count,st.has_pending_bot,st.pending_bot_played_card);
         var bcc=bc.querySelector('.bot-capture-card'); if(bcc) enhance(bcc);
     }
+
+    // Detect fresh deal and animate cards flying from deck
+    var isDeal=_prevHumanHandLen===0&&_prevBotHandCount===0&&
+               st.human_hand&&st.human_hand.length>0&&st.bot_hand_count>0;
+    if(isDeal) animateDeal(st);
+    _prevHumanHandLen=st.human_hand?st.human_hand.length:0;
+    _prevBotHandCount=st.bot_hand_count||0;
 
     if(human) attachListeners(st.capture_map);
 
@@ -960,8 +1039,6 @@ function playCard(handIdx,tableIdxs,handEl,tableEls,isCapture,isChk){
 function attachListeners(captureMap){
     var hCards=document.querySelectorAll('#hand-cards .hand-card');
     var tCards=document.querySelectorAll('#table-cards .table-card:not(.table-slot-empty)');
-    var playBtn=document.getElementById('play-button');
-    var resetBtn=document.getElementById('reset-selection');
     var selHand=null, selHandEl=null;
     var selTable=new Set();
     var valid=false;
@@ -973,7 +1050,6 @@ function attachListeners(captureMap){
         tCards.forEach(function(c){c.classList.remove('can-capture','capture-glow');});
         if(selHand===null){
             tCards.forEach(function(c){c.classList.remove('selectable');});
-            if(playBtn){playBtn.disabled=true;}
             tip('Tap a card from your hand to play');
             return;
         }
@@ -982,7 +1058,6 @@ function attachListeners(captureMap){
         if(!canCapture){
             tip('No capture — card will go to table. Play it!');
             valid=true;
-            if(playBtn) playBtn.disabled=false;
         } else {
             tCards.forEach(function(c){
                 var idx=parseInt(c.dataset.tableIndex,10);
@@ -998,10 +1073,8 @@ function attachListeners(captureMap){
             if(match){
                 valid=true;
                 tip('Playing move\u2026');
-                if(playBtn) playBtn.disabled=false;
             } else {
                 tip(mustCapture?'Select table card(s) to capture':'Select table card(s) or play alone');
-                if(playBtn) playBtn.disabled=true;
             }
         }
     }
@@ -1010,10 +1083,6 @@ function attachListeners(captureMap){
         selHand=null; selHandEl=null; selTable.clear(); valid=false;
         hCards.forEach(function(c){c.classList.remove('selected');});
         tCards.forEach(function(c){c.classList.remove('selected','can-capture','capture-glow');});
-        var hiEl=document.getElementById('hand-index');
-        var tiEl=document.getElementById('table-indices');
-        if(hiEl) hiEl.value=''; if(tiEl) tiEl.value='';
-        if(playBtn) playBtn.disabled=true;
         refresh();
     }
 
@@ -1024,8 +1093,6 @@ function attachListeners(captureMap){
             hCards.forEach(function(c){c.classList.remove('selected');});
             selHand=idx; selHandEl=this; selTable.clear();
             this.classList.add('selected');
-            var hiEl=document.getElementById('hand-index');
-            if(hiEl) hiEl.value=idx;
             refresh();
             var moves=captureMap[idx]||[];
             if(moves.length>0&&!moves.some(function(m){return m.is_capture;})){
@@ -1051,20 +1118,6 @@ function attachListeners(captureMap){
             }
         });
     });
-
-    var form=document.getElementById('play-form');
-    if(form&&!form._ajaxBound){
-        form._ajaxBound=true;
-        form.addEventListener('submit',function(e){
-            e.preventDefault();
-            if(!valid||selHand===null) return;
-            var selT=Array.from(tCards).filter(function(c){return c.classList.contains('selected');});
-            var allNE=Array.from(document.querySelectorAll('#table-cards .table-card:not(.table-slot-empty)'));
-            var isChk=selT.length>0&&selT.length===allNE.length;
-            playCard(parseInt(selHand),Array.from(selTable),selHandEl,selT,selT.length>0,isChk);
-        });
-    }
-    if(resetBtn) resetBtn.addEventListener('click',reset);
 }
 
 (function init(){
@@ -1072,7 +1125,30 @@ function attachListeners(captureMap){
     try{var el=document.getElementById('page-state');if(el) ps=JSON.parse(el.textContent);}catch(e){}
     if(!ps||ps.round_over||ps.match_over) return;
     _state=ps;
-    if(ps.game_active&&!ps.has_pending_bot&&ps.human_is_current) attachListeners(ps.capture_map);
+    _prevHumanHandLen=ps.human_hand?ps.human_hand.length:0;
+    _prevBotHandCount=ps.bot_hand_count||0;
+    var doDeal=_prevHumanHandLen>0&&_prevBotHandCount>0;
+    if(doDeal){
+        var hc=document.getElementById('hand-cards');
+        var bc=document.getElementById('bot-cards');
+        if(hc) hc.innerHTML='';
+        if(bc) bc.innerHTML='';
+        setTimeout(function(){
+            if(hc){
+                var sel=ps.human_is_current&&!ps.has_pending_bot&&!ps.round_over;
+                hc.innerHTML=buildHand(ps.human_hand,sel);
+                hc.querySelectorAll('.card').forEach(enhance);
+            }
+            if(bc){
+                bc.innerHTML=buildBotHand(ps.bot_hand_count,ps.has_pending_bot,ps.pending_bot_played_card);
+                var bcc=bc.querySelector('.bot-capture-card'); if(bcc) enhance(bcc);
+            }
+            animateDeal(ps);
+            if(!ps.has_pending_bot&&ps.human_is_current) attachListeners(ps.capture_map);
+        },500);
+    } else {
+        if(ps.game_active&&!ps.has_pending_bot&&ps.human_is_current) attachListeners(ps.capture_map);
+    }
 })();
 
 window._gameEngine={
@@ -1192,7 +1268,7 @@ document.addEventListener('DOMContentLoaded', function(){
         var list = document.getElementById('chat-messages');
         if(!list) return;
         var d = document.createElement('div');
-        d.className = 'chat-msg';
+        d.className = 'chat-msg' + ((data.display_name === ps.display_name) ? ' self-msg' : '');
         var n = document.createElement('span');
         n.className = 'chat-name';
         n.textContent = data.display_name || 'Player';
@@ -1453,10 +1529,17 @@ document.addEventListener('DOMContentLoaded', function(){
     if(copyBtn && urlInput){
         copyBtn.addEventListener('click', function(){
             urlInput.select();
-            try{ document.execCommand('copy'); } catch(e){}
-            navigator.clipboard && navigator.clipboard.writeText(urlInput.value).catch(function(){});
+            navigator.clipboard.writeText(urlInput.value).catch(function(){});
             copyBtn.textContent = '\u2713 Copied!';
-            setTimeout(function(){ copyBtn.textContent = '\uD83D\uDCCB Copy'; }, 2000);
+            copyBtn.style.background = 'rgba(46,160,67,.3)';
+            copyBtn.style.borderColor = 'rgba(46,160,67,.5)';
+            copyBtn.style.color = '#5ddc8a';
+            setTimeout(function(){
+                copyBtn.textContent = '\uD83D\uDCCB Copy';
+                copyBtn.style.background = '';
+                copyBtn.style.borderColor = '';
+                copyBtn.style.color = '';
+            }, 2000);
         });
     }
 });

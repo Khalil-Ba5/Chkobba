@@ -4,13 +4,41 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>Chkobba — Match History</title>
-    <link rel="icon" href="data:,">
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='2' y='2' width='28' height='28' rx='4' fill='%23faf6ed' stroke='%23cfc4b0'/%3E%3Ctext x='16' y='24' text-anchor='middle' font-size='22' fill='%23c1272d'%3E%E2%99%A6%3C/text%3E%3C/svg%3E">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@700;900&family=Inter:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Caveat:wght@400;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="{{ static_url('style.css') }}">
 </head>
 <body>
+<!-- Loading spinner shown until page renders fully -->
+<div id="history-loading" class="history-loading">
+    <div class="history-loading-spinner"></div>
+</div>
+
+<style>
+    #history-loading {
+        position: fixed; inset: 0; z-index: 9999;
+        display: flex; align-items: center; justify-content: center;
+        background: #2a1a10;
+        transition: opacity .4s ease;
+    }
+    .history-loading-spinner {
+        width: 36px; height: 36px;
+        border: 3px solid rgba(212,175,55,.2);
+        border-top-color: #d4af37;
+        border-radius: 50%;
+        animation: hLoadSpin .7s linear infinite;
+    }
+    @keyframes hLoadSpin { to { transform: rotate(360deg); } }
+</style>
+<script>
+    window.addEventListener('load', function(){
+        var el = document.getElementById('history-loading');
+        if(el) el.style.opacity = '0';
+        setTimeout(function(){ if(el) el.parentNode.removeChild(el); }, 450);
+    });
+</script>
 <!-- ════════════ HUD ════════════ -->
 <header class="hud">
     <div class="hud-brand">Chkobba</div>

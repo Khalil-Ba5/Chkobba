@@ -4,14 +4,14 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>Chkobba</title>
-    <link rel="icon" href="data:,">
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='2' y='2' width='28' height='28' rx='4' fill='%23faf6ed' stroke='%23cfc4b0'/%3E%3Ctext x='16' y='24' text-anchor='middle' font-size='22' fill='%23c1272d'%3E%E2%99%A6%3C/text%3E%3C/svg%3E">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@700;900&family=Inter:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Caveat:wght@400;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="{{ static_url('style.css') }}">
     <meta name="csrf-token" content="{{ csrf_token() }}">
     <!-- Socket.IO client (Phase 3) — pinned CDN, no bundler required -->
-    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js" crossorigin="anonymous" integrity="sha384-2huaZvOR9iDzHqslqwpR87isEmrfxqyWOF7hr7BY6KG0+hVKLoEXMPUJw3ynWuhO"></script>
     <script src="{{ static_url('js/socket-client.js') }}"></script>
 </head>
 <body>
@@ -61,8 +61,6 @@
             <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
             <button class="hud-btn">Menu</button>
         </form>
-        {% else %}
-        <a href="{{ url_for('history') }}" class="hud-btn">History</a>
         {% endif %}
     </nav>
 </header>
@@ -88,10 +86,10 @@
         </header>
 
         <div class="landing-preview" aria-hidden="true">
-            <div class="prev-card red-suit" style="--r:-8deg;--y:-4px">7♦</div>
-            <div class="prev-card"          style="--r:-3deg;--y: 2px">A♠</div>
-            <div class="prev-card red-suit" style="--r: 4deg;--y:-2px">K♥</div>
-            <div class="prev-card"          style="--r: 9deg;--y: 5px">Q♣</div>
+            <div class="prev-card red-suit" style="--r:-8deg;--y:-4px" aria-hidden="true">7♦</div>
+            <div class="prev-card"          style="--r:-3deg;--y: 2px" aria-hidden="true">A♠</div>
+            <div class="prev-card red-suit" style="--r: 4deg;--y:-2px" aria-hidden="true">K♥</div>
+            <div class="prev-card"          style="--r: 9deg;--y: 5px" aria-hidden="true">Q♣</div>
         </div>
 
         <!-- Player identity — always visible on landing -->
@@ -149,10 +147,13 @@
 
 {% else %}
 <!-- ════════════════ GAME BOARD ════════════════ -->
-<div class="board{% if human_is_current and not round_over and not has_pending_bot %} player-active{% elif not round_over and not has_pending_bot and not human_is_current %} bot-active{% elif has_pending_bot %} bot-active{% endif %}">
+<div class="board{% if human_is_current and not round_over and not has_pending_bot %} player-active{% elif not round_over and not has_pending_bot and not human_is_current %} bot-active{% elif has_pending_bot %} bot-active{% endif %}" role="application" aria-label="Chkobba game board">
+
+    <!-- ── Turn announcement (screen-reader only) ── -->
+    <div id="turn-announce" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
 
     <!-- ── Opponent Zone ── -->
-    <div class="zone opp-zone">
+    <div class="zone opp-zone" aria-label="Opponent zone">
         <div class="zone-meta">
             <span class="zone-name opp-name">
                 <span class="bot-mood" title="Bot mood">{{ bot_mood }}</span>
@@ -177,9 +178,10 @@
                 {% if bot_hand_count == 0 and not has_pending_bot %}<span class="zone-empty">No cards</span>{% endif %}
             </div>
             {% set cap_layers = 5 if bot_captured_count >= 20 else (4 if bot_captured_count >= 12 else (3 if bot_captured_count >= 5 else (2 if bot_captured_count >= 2 else (1 if bot_captured_count >= 1 else 0)))) %}
-            <div class="cap-pile" id="bot-cap" aria-hidden="true">
+            <div class="cap-pile" id="bot-cap">
                 {% for _ in range(cap_layers) %}<div class="card card-back pile-card"></div>{% endfor %}
-                {% if bot_captured_count > 0 %}<span class="cap-count">{{ bot_captured_count }}</span>{% endif %}
+                {% if bot_captured_count > 0 %}<span class="cap-count" aria-hidden="true">{{ bot_captured_count }}</span>{% endif %}
+                <span class="sr-only">{{ bot_captured_count }} cards captured</span>
             </div>
         </div>
     </div>
@@ -216,12 +218,13 @@
     </div>
 
     <!-- ── Player Zone ── -->
-    <div class="zone player-zone{% if human_is_current and not round_over and not has_pending_bot %} your-turn{% endif %}">
+    <div class="zone player-zone{% if human_is_current and not round_over and not has_pending_bot %} your-turn{% endif %}" aria-label="Your zone">
         <div class="zone-hand-row">
             {% set cap_layers = 5 if human_captured_count >= 20 else (4 if human_captured_count >= 12 else (3 if human_captured_count >= 5 else (2 if human_captured_count >= 2 else (1 if human_captured_count >= 1 else 0)))) %}
-            <div class="cap-pile" id="player-cap" aria-hidden="true">
+            <div class="cap-pile" id="player-cap">
                 {% for _ in range(cap_layers) %}<div class="card card-back pile-card"></div>{% endfor %}
-                {% if human_captured_count > 0 %}<span class="cap-count">{{ human_captured_count }}</span>{% endif %}
+                {% if human_captured_count > 0 %}<span class="cap-count" aria-hidden="true">{{ human_captured_count }}</span>{% endif %}
+                <span class="sr-only">{{ human_captured_count }} cards captured</span>
             </div>
             <div class="zone-cards" id="hand-cards">
                 {% if human_hand %}
@@ -398,8 +401,7 @@
                     +'<span class="c-ctr">'+suit+'</span>'
                     +'<span class="c-br">'+rank+'<br>'+suit+'</span>';
     }
-    document.querySelectorAll('.card:not(.card-back):not(.table-slot-empty)').forEach(enhance);
-    document.querySelectorAll('.prev-card').forEach(enhance);
+    document.querySelectorAll('.card:not(.card-back):not(.table-slot-empty), .prev-card').forEach(enhance);
 })();
 </script>
 
@@ -479,6 +481,7 @@
         try {
             var a = new Audio('/static/sounds/tak.mp3');
             a.volume = 0.5;
+            a.onerror = function(){};
             a.play().catch(function(){});
         } catch(e){}
     }
@@ -1015,6 +1018,7 @@ function applyState(st, snap){
         if(_botCaptureTimer){ clearTimeout(_botCaptureTimer); _botCaptureTimer = null; }
         if(human) attachListeners(st.capture_map);
     }
+    _state = st;
 }
 
 // ── Human play (optimistic) ───────────────────────────────────────────────
@@ -1326,7 +1330,10 @@ document.addEventListener('DOMContentLoaded', function(){
     // State reconciliation is handled by the state_snapshot handler in socket-client.js.
     window.Game.on('bot_thinking', function(){
         var hint = document.getElementById('selection-hint');
-        if(hint) hint.textContent = 'Si Ahmed is thinking\u2026';
+        var eng = window._gameEngine;
+        var st = eng && eng.getState ? eng.getState() : null;
+        var botName = (st && st.bot_name) || 'Bot';
+        if(hint) hint.textContent = botName + ' is thinking\u2026';
         var bSt = document.querySelector('.opp-zone .zone-status');
         if(bSt) bSt.innerHTML = '<span class="badge thinking">Thinking\u2026</span>';
     });
@@ -1407,19 +1414,21 @@ document.addEventListener('DOMContentLoaded', function(){
             var a = new Audio(s.src);
             a.loop  = true;
             a.volume = s.vol;
+            a.onerror = function(){ this._broken = true; };
             audios.push(a);
         });
         clinkAudio = new Audio(CLINK.src);
         clinkAudio.volume = CLINK.vol;
+        clinkAudio.onerror = function(){ this._broken = true; };
     }
 
     function startAll(){
         initAudio();
-        audios.forEach(function(a){ a.play().catch(function(){}); });
+        audios.forEach(function(a){ if(!a._broken) a.play().catch(function(){}); });
         scheduleClicks();
     }
     function stopAll(){
-        audios.forEach(function(a){ a.pause(); });
+        audios.forEach(function(a){ if(!a._broken) a.pause(); });
     }
 
     var clinkTimer = null;
@@ -1428,7 +1437,7 @@ document.addEventListener('DOMContentLoaded', function(){
         clearTimeout(clinkTimer);
         var delay = 8000 + Math.random() * 12000; // 8–20 s
         clinkTimer = setTimeout(function(){
-            if(enabled && clinkAudio){
+            if(enabled && clinkAudio && !clinkAudio._broken){
                 clinkAudio.currentTime = 0;
                 clinkAudio.play().catch(function(){});
             }
