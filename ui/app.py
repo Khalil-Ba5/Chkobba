@@ -1318,6 +1318,9 @@ def index():
             app.config["DEBUG_MODE"] = False
 
     manager = _get_manager()
+    # ?next_round=1 triggers auto-transition (used by "Next Round" button)
+    if request.args.get("next_round") == "1" and manager.state is not None:
+        manager.next_round()
     ctx = manager.view_data()
 
     # Guest profile — available on every page render.

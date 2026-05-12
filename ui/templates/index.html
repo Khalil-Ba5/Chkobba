@@ -318,10 +318,7 @@
         <p class="nb-match">Match running total: {{ match_scores[0] }} – {{ match_scores[1] }}</p>
 
         <div class="nb-continue">
-            <form action="{{ url_for('next_round') }}" method="post" class="inl">
-                <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
-                <button class="btn-stamp">Next Round →</button>
-            </form>
+            <a href="/?next_round=1" class="btn-stamp" style="text-decoration:none">Next Round →</a>
         </div>
 
     </div>
@@ -525,6 +522,8 @@ var _busy  = false;
 var _state = null; // authoritative game-state cache; kept in sync with every server response
 var _prevHumanHandLen = 0;
 var _prevBotHandCount = 0;
+var _prevDeckRemaining = 0;
+var _prevHumanHand = [];
 
 // ── Client-side state prediction ─────────────────────────────────────────
 // Mirrors _place_card_in_slots() in app.py (human→odd rows, bot→even rows).
@@ -734,6 +733,44 @@ function animateDeal(st){
                 item.el.style.visibility = 'visible';
             }, 500);
         }, idx * 250);
+    });
+}
+
+// ── Mid-round draw: animate cards from deck to hand by DOM index ────────
+function animateDrawCards(selector, indices){
+    var deck = document.querySelector('.deck-stack');
+    if(!deck || !indices || !indices.length) return;
+    var dr = deck.getBoundingClientRect();
+    var deckX = dr.left + dr.width/2;
+    var deckY = dr.top + dr.height/2;
+
+    var cards = document.querySelectorAll(selector);
+    indices.forEach(function(idx, order){
+        var cardEl = cards[idx];
+        if(!cardEl || cardEl.classList.contains('zone-empty')) return;
+        cardEl.style.visibility = 'hidden';
+        var r = cardEl.getBoundingClientRect();
+
+        var clone = document.createElement('div');
+        clone.className = 'card card-back';
+        clone.style.cssText = 'position:fixed;left:'+(deckX-r.width/2)+'px;top:'+(deckY-r.height/2)+'px;width:'+r.width+'px;height:'+r.height+'px;margin:0;z-index:999;transition:transform 500ms cubic-bezier(.25,.85,.35,1);pointer-events:none;box-shadow:0 6px 18px rgba(0,0,0,.5);';
+        document.body.appendChild(clone);
+
+        var tx = (r.left + r.width/2) - deckX;
+        var ty = (r.top + r.height/2) - deckY;
+
+        setTimeout(function(){
+            requestAnimationFrame(function(){
+                requestAnimationFrame(function(){
+                    clone.style.transform = 'translate('+tx.toFixed(1)+'px,'+ty.toFixed(1)+'px)';
+                });
+            });
+        }, order * 120);
+
+        setTimeout(function(){
+            if(clone.parentNode) clone.parentNode.removeChild(clone);
+            cardEl.style.visibility = 'visible';
+        }, 550 + order * 120);
     });
 }
 
@@ -999,8 +1036,31 @@ function applyState(st, snap){
     var isDeal = _prevHumanHandLen===0 && _prevBotHandCount===0 &&
                  st.human_hand && st.human_hand.length>0 && st.bot_hand_count>0;
     if(isDeal) animateDeal(st);
+
+    // Mid-round draw animation: card flies from deck when deck_remaining drops
+    if(!isDeal && _prevDeckRemaining > (st.deck_remaining || 0)) {
+        // Human: find new card indices by content comparison
+        if(st.human_hand && _prevHumanHand) {
+            var hIdxs = [];
+            for(var _hi=0; _hi<st.human_hand.length; _hi++) {
+                if(_prevHumanHand.indexOf(st.human_hand[_hi]) === -1) hIdxs.push(_hi);
+            }
+            if(hIdxs.length) animateDrawCards('#hand-cards .hand-card', hIdxs);
+        }
+        // Bot: find new card-back indices
+        if((st.bot_hand_count || 0) > _prevBotHandCount) {
+            var bEls = document.querySelectorAll('#bot-cards .card-back');
+            var bNew = st.bot_hand_count - _prevBotHandCount;
+            var bIdxs = [];
+            for(var _bi=bEls.length - bNew; _bi<bEls.length; _bi++) bIdxs.push(_bi);
+            if(bIdxs.length) animateDrawCards('#bot-cards .card-back', bIdxs);
+        }
+    }
+
     _prevHumanHandLen = st.human_hand ? st.human_hand.length : 0;
     _prevBotHandCount = st.bot_hand_count || 0;
+    _prevDeckRemaining = st.deck_remaining || 0;
+    _prevHumanHand = st.human_hand ? st.human_hand.slice() : [];
 
     // Commentary toast
     if(st.commentary_toast && window.showCommentaryToast) window.showCommentaryToast(st.commentary_toast);
@@ -1268,6 +1328,8 @@ function attachListeners(captureMap){
     _state = ps;
     _prevHumanHandLen = ps.human_hand ? ps.human_hand.length : 0;
     _prevBotHandCount = ps.bot_hand_count || 0;
+    _prevDeckRemaining = ps.deck_remaining || 0;
+    _prevHumanHand = ps.human_hand ? ps.human_hand.slice() : [];
     var hasSocket = ps.room_id && ps.room_id !== '__no_room__';
     var doDeal = _prevHumanHandLen>0 && _prevBotHandCount>0;
 
