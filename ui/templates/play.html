@@ -213,7 +213,7 @@
             </span>
         </div>
         <div class="zone-hand-row">
-            <div class="zone-cards" id="bot-cards">
+            <div class="zone-cards init-hidden" id="bot-cards">
                 {% for _ in range(bot_hand_count) %}<div class="card card-back"></div>{% endfor %}
                 {% if bot_hand_count == 0 and game_active %}<span class="zone-empty">No cards</span>{% endif %}
             </div>
@@ -265,7 +265,7 @@
                 {% if human_captured_count > 0 %}<span class="cap-count" aria-hidden="true">{{ human_captured_count }}</span>{% endif %}
                 <span class="sr-only">{{ human_captured_count }} cards captured</span>
             </div>
-            <div class="zone-cards" id="hand-cards">
+            <div class="zone-cards init-hidden" id="hand-cards">
                 {% if human_hand %}
                     {% for card in human_hand %}
                     <div class="card hand-card {% if '♥' in card or '♦' in card %}red-suit{% endif %}{% if human_is_current and not round_over and not has_pending_bot %} selectable{% endif %}"
@@ -650,14 +650,33 @@ function buildTable(slots,sel,lastCard,lastBy){
     if(!slots) return '<p class="felt-empty">No cards on table</p>';
     var hasSome=slots.some(function(s){return s.card;});
     if(!hasSome) return '<p class="felt-empty">No cards on table</p>';
-    return slots.map(function(slot){
-        if(!slot.card) return '<div class="card table-slot-empty" aria-hidden="true"></div>';
-        var fly=(slot.card===lastCard&&lastBy==='human')?' fly-from-human':
-                (slot.card===lastCard&&lastBy==='bot')?' fly-from-bot':'';
-        var ti=(slot.table_index!==null&&slot.table_index!==undefined)?slot.table_index:'';
-        return '<div class="card table-card'+(isRed(slot.card)?' red-suit':'')+(sel?' selectable':'')+fly+
-               '" data-table-index="'+ti+'" data-card-str="'+slot.card+'">'+slot.card+'</div>';
-    }).join('');
+    var html='';
+    for(var i=0; i<slots.length; i+=2){
+        var bot=slots[i];
+        var human=slots[i+1];
+        var hasBot=bot&&bot.card;
+        var hasHuman=human&&human.card;
+        if(!hasBot&&!hasHuman) continue;
+        html+='<div class="table-col">';
+        if(hasBot){
+            var fly=(bot.card===lastCard&&lastBy==='bot')?' fly-from-bot':'';
+            var ti=(bot.table_index!=null)?bot.table_index:'';
+            html+='<div class="card table-card'+(isRed(bot.card)?' red-suit':'')+(sel?' selectable':'')+fly+
+                  '" data-table-index="'+ti+'" data-card-str="'+bot.card+'">'+bot.card+'</div>';
+        } else {
+            html+='<div class="card table-slot-empty" aria-hidden="true"></div>';
+        }
+        if(hasHuman){
+            var fly=(human.card===lastCard&&lastBy==='human')?' fly-from-human':'';
+            var ti=(human.table_index!=null)?human.table_index:'';
+            html+='<div class="card table-card'+(isRed(human.card)?' red-suit':'')+(sel?' selectable':'')+fly+
+                  '" data-table-index="'+ti+'" data-card-str="'+human.card+'">'+human.card+'</div>';
+        } else {
+            html+='<div class="card table-slot-empty" aria-hidden="true"></div>';
+        }
+        html+='</div>';
+    }
+    return html;
 }
 
 function buildCapPile(count){
@@ -680,17 +699,38 @@ function buildBotHand(count,hasPending,pendingCard){
     return h;
 }
 
+// ── Deterministic hash: same card string → same scatter position ────────
+function _hashStr(s){
+    var h=0;
+    for(var i=0;i<s.length;i++){h=((h<<5)-h)+s.charCodeAt(i);h|=0;}
+    return Math.abs(h);
+}
+
+// ── Center table columns if > 3 (called only after deal animation) ───────
+function centerTableCols(){
+    var cols=document.querySelectorAll('#table-cards .table-col');
+    if(cols.length<=3) return;
+    cols.forEach(function(col, i){
+        if(i===0) col.style.order=0;
+        else{
+            var side=(i%2===1)?-1:1;
+            col.style.order=side*Math.ceil(i/2);
+        }
+    });
+}
+
 function scatterAndFlip(container,snap){
-    var rng=function(a,b){return Math.random()*(b-a)+a;};
     var cards=Array.from(container.querySelectorAll('.table-card'));
-    var idx=0;
     cards.forEach(function(c){
-        var top=(idx%2===0); idx++;
         if(c.classList.contains('table-slot-empty')) return;
+        var cs=c.dataset.cardStr||'';
+        var h=_hashStr(cs);
+        var idx=Array.from(c.parentNode.children).indexOf(c);
+        var top=(idx%2===0);
         var yb=top?-6:6;
-        c.style.setProperty('--rx',rng(-7,7).toFixed(1)+'deg');
-        c.style.setProperty('--tx',rng(-9,9).toFixed(1)+'px');
-        c.style.setProperty('--ty',(yb+rng(-4,4)).toFixed(1)+'px');
+        c.style.setProperty('--rx',((h%15)-7).toFixed(1)+'deg');
+        c.style.setProperty('--tx',((Math.floor(h/17)%19)-9).toFixed(1)+'px');
+        c.style.setProperty('--ty',(yb+((Math.floor(h/31)%9)-4)).toFixed(1)+'px');
     });
     if(!snap) return;
     var newCard=container.querySelector('.fly-from-human,.fly-from-bot');
@@ -1180,6 +1220,7 @@ function attachListeners(captureMap){
     var ps=null;
     try{var el=document.getElementById('page-state');if(el) ps=JSON.parse(el.textContent);}catch(e){}
     if(!ps||ps.round_over||ps.match_over) return;
+    document.querySelectorAll('.zone-cards.init-hidden').forEach(function(el){ el.classList.remove('init-hidden'); });
     _state=ps;
     _prevHumanHandLen=ps.human_hand?ps.human_hand.length:0;
     _prevBotHandCount=ps.bot_hand_count||0;
@@ -1206,6 +1247,8 @@ function attachListeners(captureMap){
                 var bcc=bc.querySelector('.bot-capture-card'); if(bcc) enhance(bcc);
             }
             animateDeal(ps);
+            var _maxCrd = Math.max(ps.human_hand ? ps.human_hand.length : 0, ps.bot_hand_count || 0);
+            setTimeout(centerTableCols, _maxCrd * 250 + 600);
             if(!ps.has_pending_bot&&ps.human_is_current) attachListeners(ps.capture_map);
         },500);
     } else {
