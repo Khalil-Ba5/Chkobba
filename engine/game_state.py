@@ -80,6 +80,8 @@ class GameState:
     current_player: int = 0
     last_capturer: Optional[int] = None
     move_history: List[Move] = field(default_factory=list)
+    # One-shot UI hint: (receiver_seat, swept_cards) set when round ends before table is cleared.
+    round_end_sweep: Optional[Tuple[int, Tuple[Card, ...]]] = None
 
     # Optional match score (across rounds)
     match_scores: List[int] = field(default_factory=lambda: [0, 0])
@@ -102,6 +104,11 @@ class GameState:
             last_capturer=self.last_capturer,
             move_history=self.move_history.copy(),
             match_scores=self.match_scores.copy(),
+            round_end_sweep=(
+                (self.round_end_sweep[0], tuple(self.round_end_sweep[1]))
+                if self.round_end_sweep is not None
+                else None
+            ),
         )
 
     @property
@@ -189,6 +196,10 @@ class GameState:
 
         # End-of-round cleanup: leftover table cards go to last capturer
         if self.is_round_over:
+            if self.last_capturer is not None and self.table_cards:
+                self.round_end_sweep = (self.last_capturer, tuple(self.table_cards))
+            else:
+                self.round_end_sweep = None
             self._collect_remaining_table_cards()
 
     def card_has_capture(self, card: Card) -> bool:
@@ -346,17 +357,85 @@ def tunisian_barmila_points(cards0: List[Card], cards1: List[Card]) -> Tuple[int
     return (0, 0)
 
 
-def create_initial_state(seed: Optional[int] = None) -> GameState:
-    deck = full_deck()
-    rng = random.Random(seed)
-    rng.shuffle(deck)
+# Minimum cards each side of the cut so both "halves" are non-trivial.
+OPENING_CUT_MARGIN = 8
 
-    table_cards = [deck.pop() for _ in range(4)]
+
+def apply_opening_deal_from_cut(
+    deck: List[Card],
+    cut_index: int,
+    keep_cut: bool,
+    cutter_seat: int,
+) -> GameState:
+    """
+    Tunisian opening deal after the cutter has seen the cut card.
+
+    *cut_index* — index into *deck* (0 = top of pile, same as deal_if_needed pop(0)).
+    The card at that index is the "cut card" (top of the lower half).
+
+    Path A (*keep_cut*): cut card → cutter's hand; dealer gives cutter 2 more;
+    opponent 3; 4 to table (all from the top of the remaining deck).
+
+    Path B (not *keep_cut*): cut card face-up on table; 3 more to table;
+    cutter 3; opponent 3.
+    """
+    n = len(deck)
+    if not (0 <= cut_index < n):
+        raise ValueError("cut_index out of range")
+    deck = deck.copy()
+    cut_card = deck.pop(cut_index)
+
     players = [PlayerState(player_id=0), PlayerState(player_id=1)]
+    cutter = players[cutter_seat]
+    opp = players[1 - cutter_seat]
 
-    state = GameState(players=players, table_cards=table_cards, deck=deck)
-    state.deal_if_needed()
-    return state
+    if keep_cut:
+        cutter.hand.append(cut_card)
+        for _ in range(2):
+            cutter.hand.append(deck.pop(0))
+        for _ in range(3):
+            opp.hand.append(deck.pop(0))
+        table_cards = [deck.pop(0) for _ in range(4)]
+    else:
+        table_cards = [cut_card]
+        for _ in range(3):
+            table_cards.append(deck.pop(0))
+        for _ in range(3):
+            cutter.hand.append(deck.pop(0))
+        for _ in range(3):
+            opp.hand.append(deck.pop(0))
+
+    return GameState(
+        players=players,
+        table_cards=table_cards,
+        deck=deck,
+        current_player=cutter_seat,
+        last_capturer=None,
+    )
+
+
+def choose_opening_cut_index(rng: random.Random, deck_len: int) -> int:
+    """Pick a cut index with OPENING_CUT_MARGIN cards above and below."""
+    lo = OPENING_CUT_MARGIN
+    hi = deck_len - OPENING_CUT_MARGIN - 1
+    if hi < lo:
+        return deck_len // 2
+    return rng.randint(lo, hi)
+
+
+def create_initial_state(seed: Optional[int] = None) -> GameState:
+    """
+    Build a fully dealt round (for tests / simulations).
+
+    Uses the cut-and-deal rules with a random cut index and keep/discard
+    choice derived from *seed* for reproducibility.
+    """
+    rng = random.Random(seed)
+    deck = full_deck()
+    rng.shuffle(deck)
+    cut_index = choose_opening_cut_index(rng, len(deck))
+    keep_cut = bool(rng.getrandbits(1))
+    return apply_opening_deal_from_cut(deck, cut_index, keep_cut, cutter_seat=0)
 
 def count_rank(cards: List[Card], rank: Rank) -> int:
         return sum(1 for c in cards if c.rank == rank)

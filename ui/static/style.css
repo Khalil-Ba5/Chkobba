@@ -85,11 +85,20 @@ button { border: none; outline: none; }
     border-radius: 999px;
     font-size: .8rem;
 }
+.hud-score.you {
+    min-width: 0;
+    flex: 1 1 auto;
+    max-width: min(52vw, 20rem);
+}
 .hs-label { color: var(--muted); text-transform: uppercase; letter-spacing: .05em; font-weight: 600; }
 .hs-val   { font-weight: 800; font-size: 1rem; color: var(--text); }
 .hs-val.gold { color: var(--gold); }
 .hud-score.you  .hs-val { color: var(--green); }
 .hud-score.bot  .hs-val { color: var(--orange); }
+.hud-score.target,
+.hud-score.bot {
+    flex-shrink: 0;
+}
 
 .hud-nav { display: flex; align-items: center; gap: .5rem; flex-shrink: 0; }
 
@@ -250,12 +259,23 @@ button { border: none; outline: none; }
 /* Landing form box */
 .landing-box {
     width: 100%;
+    max-width: 380px;
+    margin-left: auto;
+    margin-right: auto;
     background: rgba(0,0,0,.25);
     border: 1px solid rgba(255,215,0,.2);
     border-radius: 20px;
     padding: 2rem;
     backdrop-filter: blur(10px);
     display: flex; flex-direction: column; align-items: center; gap: 1.2rem;
+}
+
+.landing-box form {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 100%;
+    gap: 1rem;
 }
 
 .landing-resume { width: 100%; }
@@ -284,7 +304,7 @@ button { border: none; outline: none; }
 
 .landing-label {
     color: var(--muted); font-size: .85rem; text-transform: uppercase;
-    letter-spacing: .1em; font-weight: 600; align-self: flex-start;
+    letter-spacing: .1em; font-weight: 600; text-align: center; align-self: center;
 }
 
 .target-opts { display: flex; gap: .75rem; flex-wrap: wrap; justify-content: center; width: 100%; }
@@ -393,6 +413,13 @@ button { border: none; outline: none; }
 }
 /* Hide hand cards until JS initializes them (prevents server-render flash) */
 .zone-cards.init-hidden { visibility: hidden; }
+
+/* Solo bot opens: hide dealt table/hands on first paint until JS clears (see chk-opp-first-boot on <html>). */
+html.chk-opp-first-boot #table-cards,
+html.chk-opp-first-boot #hand-cards,
+html.chk-opp-first-boot #bot-cards {
+    visibility: hidden;
+}
 
 /* ── Badges ── */
 .badge {
@@ -715,14 +742,14 @@ button { border: none; outline: none; }
     z-index: 10;
 }
 
-/* Table card — grounded on felt, with JS-injected random scatter vars */
+/* Table card — grounded on felt, with JS-injected scatter vars (no transition) */
 .table-card {
     box-shadow:
         0 6px 16px rgba(0,0,0,.55),
         0 1px 0 rgba(255,255,255,.4) inset;
     /* --rx, --tx, --ty set by JS scatter script */
     transform: rotate(var(--rx, 0deg)) translate(var(--tx, 0px), var(--ty, 0px));
-    transition: transform .18s ease, box-shadow .18s ease, outline .1s ease;
+    transition: box-shadow .18s ease, outline .1s ease;
 }
 .felt-cards .table-card.selectable:hover {
     transform: rotate(var(--rx, 0deg)) translate(var(--tx, 0px), calc(var(--ty, 0px) - 11px)) scale(1.06);
@@ -1027,6 +1054,71 @@ button { border: none; outline: none; }
 
 .modal-final { font-size: 2.5rem; font-weight: 900; letter-spacing: .05em; color: var(--gold-light); }
 
+/* Opening cut (non-dealer chooses keep vs table) — dim is light; felt stays visible */
+.cut-choice-overlay {
+    position: fixed; inset: 0; z-index: 210;
+    background: rgba(0,0,0,.22);
+    backdrop-filter: blur(4px);
+    display: none; align-items: center; justify-content: center;
+    padding: 1rem;
+    pointer-events: none;
+}
+.cut-choice-overlay .cut-choice-panel {
+    pointer-events: auto;
+}
+.cut-choice-panel {
+    background: rgba(28, 16, 8, 0.78);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    border: 1px solid rgba(255,255,255,.14);
+    border-top: 1px solid rgba(255,215,0,.35);
+    border-radius: 22px;
+    padding: 1.75rem 1.5rem;
+    max-width: 440px;
+    width: 100%;
+    text-align: center;
+    box-shadow: 0 20px 50px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.06);
+    display: flex; flex-direction: column; align-items: center; gap: 1rem;
+}
+.cut-choice-title {
+    font-family: 'Cinzel', serif;
+    font-size: 1.45rem; font-weight: 900;
+    letter-spacing: .04em; color: var(--text);
+    margin: 0;
+}
+.cut-choice-lead,
+.cut-choice-wait {
+    color: var(--muted);
+    font-size: .95rem;
+    line-height: 1.45;
+    margin: 0;
+}
+.cut-choice-wait { font-style: italic; }
+.cut-card-display {
+    font-size: 1.25rem;
+    min-width: 4.5rem;
+    min-height: 6rem;
+}
+.cut-choice-actions {
+    display: flex; flex-wrap: wrap; gap: .65rem;
+    justify-content: center;
+    width: 100%;
+}
+.cut-choice-rules {
+    font-size: .82rem;
+    color: var(--muted);
+    line-height: 1.45;
+    text-align: left;
+    margin: 0;
+    width: 100%;
+}
+.selection-hint {
+    color: var(--muted);
+    font-size: .85rem;
+    line-height: 1.35;
+    flex: 1;
+}
+
 /* ════════════════════════════════════════
    NOTEBOOK SCORECARD (round-over)
 ════════════════════════════════════════ */
@@ -1211,7 +1303,11 @@ button { border: none; outline: none; }
 }
 .player-name-btn:hover { color: var(--gold-light); }
 .hs-name-text {
-    max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    min-width: 0;
+    max-width: min(48vw, 14rem);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 /* ── Landing identity row ───────────────────────────────────────────────── */
@@ -1305,6 +1401,8 @@ button { border: none; outline: none; }
     .hud-brand { font-size: 1rem; }
     .hud-scores { gap: .35rem; }
     .hud-score { padding: .25rem .5rem; font-size: .72rem; }
+    .hud-score.you { max-width: min(58vw, 100%); }
+    .hs-name-text { max-width: min(42vw, 10rem); }
     .hs-val { font-size: .9rem; }
 
     .board { padding: .35rem .5rem; gap: .4rem; }
@@ -1375,7 +1473,7 @@ button { border: none; outline: none; }
     display: flex;
     flex-direction: column;
     gap: .7rem;
-    margin: 1.4rem 0 .6rem;
+    margin: 1.4rem auto .6rem;
     width: 100%;
     max-width: 340px;
 }
@@ -1432,7 +1530,7 @@ button { border: none; outline: none; }
     gap: .75rem;
     width: 100%;
     max-width: 340px;
-    margin: .8rem 0;
+    margin: .8rem auto;
     color: rgba(250,246,237,.35);
     font-size: .8rem;
     letter-spacing: .06em;

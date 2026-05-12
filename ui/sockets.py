@@ -59,6 +59,9 @@ _disconnect_tasks: dict[str, str]                = {}
 BOT_THINKING_DELAY: float = (
     float(os.environ.get("BOT_THINKING_DELAY_MS", "800")) / 1000.0
 )
+# Solo: first bot move after opening deal — lets the client show table → deal → pause
+# before the server emits the pending-card snapshot (aligns with index.html UX).
+SOLO_OPENING_BOT_DELAY_S: float = float(os.environ.get("SOLO_OPENING_BOT_DELAY_S", "2.2"))
 
 
 def _next_seq(room_id: str) -> int:
@@ -626,6 +629,54 @@ def on_play_card(data: dict):
     )
 
 
+@socketio.on("cut_choice")
+def on_cut_choice(data: dict):
+    """Opening round: cutter chooses keep (Path A) or discard to table (Path B)."""
+    data = data or {}
+    room_id = data.get("room_id") or session.get("solo_room_id")
+    if not room_id:
+        emit("error", {"message": "No room ID"})
+        return
+
+    keep_raw = str(data.get("keep", "")).strip().lower()
+    if keep_raw in ("1", "true", "yes", "keep"):
+        keep_cut = True
+    elif keep_raw in ("0", "false", "no", "discard", "table"):
+        keep_cut = False
+    else:
+        emit("error", {"message": "Invalid keep"})
+        return
+
+    try:
+        manager = GameManager.load(room_id, app.game_store)
+    except RoomNotFoundError:
+        emit("error", {"message": "Room not found"})
+        return
+
+    acting_seat = _sid_to_seat.get(request.sid, 0)
+    if not manager.commit_opening_cut_choice(keep_cut, acting_seat=acting_seat):
+        vd = manager.view_data(viewer_seat=acting_seat)
+        vd["seq"] = _room_seqs.get(room_id, 0)
+        emit("state_snapshot", vd)
+        emit("error", {"message": "Cut choice rejected"})
+        return
+
+    seq = _next_seq(room_id)
+    is_mp = manager.mode == "1v1"
+    if is_mp:
+        vd0 = manager.view_data(viewer_seat=0)
+        vd1 = manager.view_data(viewer_seat=1)
+        vd0["seq"] = vd1["seq"] = seq
+        _emit_private_snapshots(room_id, {0: vd0, 1: vd1})
+    else:
+        vd = manager.view_data()
+        vd["seq"] = seq
+        emit("state_snapshot", vd)
+
+    if manager.phase == GamePhase.BOT_MOVING and manager.pending_bot_move:
+        socketio.start_background_task(_run_bot_turn, room_id, app.game_store)
+
+
 @socketio.on("request_resync")
 def on_request_resync(data: dict):
     data = data or {}
@@ -717,6 +768,28 @@ def _emit_private_snapshots(room_id: str, private_views: dict) -> None:
             socketio.emit("state_snapshot", vd, to=sid)
 
 
+def _emit_state_snapshot_after_move(
+    room_id: str, view_data: dict, private_views: dict | None = None
+) -> None:
+    """Authoritative snapshot after a play (including round/match over).
+
+    Clients rely on ``state_snapshot`` for ``round_end_sweep`` and scores; the
+    ``round_over`` / ``match_over`` delta alone is not enough.
+    """
+    if private_views:
+        blob = app.game_store.get(room_id)
+        for seat_idx, vd in private_views.items():
+            out = dict(vd)
+            out["seq"] = _next_seq(room_id)
+            sid = _seat_to_sid(room_id, seat_idx, blob)
+            if sid:
+                socketio.emit("state_snapshot", out, to=sid)
+        return
+    out = dict(view_data)
+    out["seq"] = _next_seq(room_id)
+    socketio.emit("state_snapshot", out, to=room_id)
+
+
 def _emit_play_events(
     room_id: str,
     seat: int,
@@ -784,6 +857,7 @@ def _emit_play_events(
             },
             to=room_id,
         )
+        _emit_state_snapshot_after_move(room_id, view_data, private_views)
         return
 
     if view_data.get("round_over"):
@@ -797,6 +871,7 @@ def _emit_play_events(
             },
             to=room_id,
         )
+        _emit_state_snapshot_after_move(room_id, view_data, private_views)
         return
 
     seq3 = _next_seq(room_id)
@@ -851,6 +926,14 @@ def _run_bot_turn(room_id: str, store) -> None:
     if not manager.pending_bot_move:
         logger.warning("[bot_turn] no pending move in room %.8s", room_id)
         return
+
+    # First move of the round in solo: client shows table, deal animation, then pause.
+    if (
+        manager.mode == "solo"
+        and manager.state
+        and len(manager.state.move_history) == 0
+    ):
+        socketio.sleep(SOLO_OPENING_BOT_DELAY_S)
 
     # Emit a pre-play snapshot so clients can show the bot's chosen card in the
     # opponent hand zone (pending_bot_played_card) before it hits the table.

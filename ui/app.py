@@ -19,6 +19,7 @@ import sys
 import logging
 import hmac
 import secrets
+import random
 from pathlib import Path
 from functools import wraps
 from enum import Enum
@@ -31,7 +32,20 @@ sys.path.insert(0, str(project_root))
 from flask import Flask, render_template, redirect, url_for, flash, request, session, jsonify
 from flask_socketio import SocketIO
 
-from engine.game_state import GameState, Move, Card, Suit, Rank, PlayerState, create_initial_state, tunisian_barmila_points
+from engine.game_state import (
+    GameState,
+    Move,
+    Card,
+    Suit,
+    Rank,
+    PlayerState,
+    create_initial_state,
+    tunisian_barmila_points,
+    full_deck,
+    apply_opening_deal_from_cut,
+    choose_opening_cut_index,
+    OPENING_CUT_MARGIN,
+)
 from engine.heuristic_bot import get_heuristic_move
 from engine.utils import card_to_str
 from engine.persistence import (
@@ -72,6 +86,7 @@ class RoomNotFoundError(Exception):
 class GamePhase(Enum):
     """Explicit game phase for state machine."""
     MENU = "menu"              # Start screen, no game running
+    CUT_DECISION = "cut_decision"  # Opening: cutter chooses keep vs table
     PLAYING_HUMAN = "playing_human"  # Human's turn to move
     PLAYING_BOT = "playing_bot"      # Bot is thinking and about to move
     BOT_MOVING = "bot_moving"  # Bot move animation in progress
@@ -276,6 +291,27 @@ def move_from_data(data: dict) -> Move:
     )
 
 
+def _coerce_target_score(value: object | None) -> int | None:
+    """Parse target score from JSON / forms; return None if missing or invalid."""
+    if value is None:
+        return None
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return None
+    return n if n > 0 else None
+
+
+def _coerce_match_pair(value: object | None) -> list[int]:
+    """Normalise stored match scores to a pair of ints."""
+    if not isinstance(value, (list, tuple)) or len(value) < 2:
+        return [0, 0]
+    try:
+        return [int(value[0]), int(value[1])]
+    except (TypeError, ValueError):
+        return [0, 0]
+
+
 # ---------------------------------------------------------------------------
 # In-memory game state
 # ---------------------------------------------------------------------------
@@ -320,7 +356,9 @@ class GameManager:
         
         # UI table slots (preserve empty positions after captures)
         self.table_slots: list[Card | None] = []
-        
+        # Opening cut: index into state.deck for the cut card (pre-deal)
+        self.opening_cut_index: int | None = None
+
         # Player IDs — may be flipped by replace_with_bot() for seat-1-replaced games
         self.human_id: int = 0
         self.bot_id: int = 1
@@ -371,6 +409,90 @@ class GameManager:
         self.last_played_by = None
         self.last_human_move = None
         self.last_bot_move = None
+        self.opening_cut_index = None
+
+    def _setup_opening_cut(self, starting_seat: int, rng: random.Random | None = None) -> None:
+        """Shuffle deck and enter CUT_DECISION; *starting_seat* is the cutter (plays first)."""
+        rng = rng or random.Random()
+        deck = full_deck()
+        rng.shuffle(deck)
+        self.state = GameState(
+            players=[PlayerState(player_id=0), PlayerState(player_id=1)],
+            table_cards=[],
+            deck=deck,
+            current_player=starting_seat,
+            last_capturer=None,
+        )
+        self.opening_cut_index = choose_opening_cut_index(rng, len(deck))
+        self.phase = GamePhase.CUT_DECISION
+        self.table_slots = []
+        self._try_bot_opening_cut_solo()
+
+    def _try_bot_opening_cut_solo(self) -> None:
+        """Solo: if the bot is the opening cutter, choose keep vs table automatically.
+
+        Rule: cut card capture value < 6 → discard to table (Path B); else keep (Path A).
+        """
+        if self.mode != "solo":
+            return
+        if self.phase != GamePhase.CUT_DECISION:
+            return
+        if self.state is None or self.opening_cut_index is None:
+            return
+        if self.state.current_player != self.bot_id:
+            return
+        cut = self.state.deck[self.opening_cut_index]
+        keep_cut = cut.value >= 6
+        if not self.commit_opening_cut_choice(keep_cut, acting_seat=self.bot_id):
+            logger.warning(
+                "Bot opening cut auto-choice failed  room=%.8s",
+                self.room_id,
+            )
+
+    def commit_opening_cut_choice(
+        self,
+        keep_cut: bool,
+        acting_seat: int,
+        client_cut_index: int | None = None,
+    ) -> bool:
+        """Apply Path A (keep) or B (discard) for the opening cut. Returns False if invalid."""
+        if (
+            self.phase != GamePhase.CUT_DECISION
+            or self.state is None
+            or self.opening_cut_index is None
+        ):
+            return False
+        if acting_seat != self.state.current_player:
+            return False
+        k = self.opening_cut_index
+        if client_cut_index is not None:
+            n = len(self.state.deck)
+            lo = OPENING_CUT_MARGIN
+            hi = n - OPENING_CUT_MARGIN - 1
+            if hi < lo or not (lo <= client_cut_index <= hi):
+                return False
+            k = int(client_cut_index)
+        cutter = self.state.current_player
+        try:
+            new_state = apply_opening_deal_from_cut(
+                self.state.deck, k, keep_cut, cutter_seat=cutter
+            )
+        except ValueError:
+            return False
+        self.state = new_state
+        self.opening_cut_index = None
+        self.table_slots = new_state.table_cards.copy()
+        self.phase = GamePhase.PLAYING_HUMAN
+        self.messages.append(
+            "Opening deal: cut card stays in the cutter's hand."
+            if keep_cut
+            else "Opening deal: cut card face-up on the table."
+        )
+        if self.mode == "solo" and new_state.current_player == self.bot_id:
+            self.phase = GamePhase.BOT_MOVING
+            self._queue_bot_move()
+        self.save()
+        return True
 
     def start_game(self, target_score: int, starting_seat: int = 0) -> None:
         """Initialize a new match with the given target score."""
@@ -382,13 +504,9 @@ class GameManager:
         self.round_history = []
         self._clear_move_state()
 
-        self.state = create_initial_state()
-        if starting_seat != 0:
-            self.state.current_player = starting_seat
-        self.table_slots = self.state.table_cards.copy()
-        self.phase = GamePhase.PLAYING_HUMAN
-        logger.info("Started new game with target score %d", target_score)
-        self.messages = [f"New game started. Target: {target_score} points."]
+        self._setup_opening_cut(starting_seat, random.Random())
+        logger.info("Started new game with target score %d (cut phase)", target_score)
+        self.messages = [f"New game started. Target: {target_score} points.", "Cut the deck — choose to keep the cut card or place it on the table."]
         self.last_human_move = None
         self.last_bot_move = None
         self.round_over = False
@@ -409,10 +527,10 @@ class GameManager:
         self.last_human_played_table_index = None
         self.last_played_card = None
         self.last_played_by = None
-        self.state = create_initial_state()
-        self.table_slots = self.state.table_cards.copy()
-        self.phase = GamePhase.PLAYING_HUMAN
-        self.messages.append("New round started!")
+        # Alternate who cuts / plays first each round (seat 0, then 1, then 0, …).
+        next_opener = len(self.round_history) % 2
+        self._setup_opening_cut(next_opener, random.Random())
+        self.messages.append("New round — cut the deck.")
         self.save()
 
     # ------------------------------------------------------------------
@@ -474,6 +592,7 @@ class GameManager:
             "human_id": self.human_id,
             "bot_id": self.bot_id,
             "bot_replacement_seat": self.bot_replacement_seat,
+            "opening_cut_index": self.opening_cut_index,
             "state": state_dict,
         }
 
@@ -573,6 +692,7 @@ class GameManager:
             )
             for p in state_data["players"]
         ]
+        inner_ms = _coerce_match_pair(state_data.get("match_scores"))
         self.state = GameState(
             players=players,
             table_cards=[card_from_data(c) for c in state_data["table_cards"]],
@@ -580,11 +700,12 @@ class GameManager:
             current_player=state_data["current_player"],
             last_capturer=state_data["last_capturer"],
             move_history=[move_from_data(m) for m in state_data.get("move_history", [])],
-            match_scores=state_data.get("match_scores", [0, 0]),
+            match_scores=inner_ms,
+            round_end_sweep=None,
         )
         self.phase = GamePhase(data.get("phase", GamePhase.PLAYING_HUMAN.value))
-        self.match_scores = data.get("match_scores", [0, 0])
-        self.target_score = data.get("target_score")
+        self.match_scores = _coerce_match_pair(data.get("match_scores"))
+        self.target_score = _coerce_target_score(data.get("target_score"))
         self.match_winner = data.get("match_winner")
         self.final_points = data.get("final_points")
         self.match_start_time = data.get("match_start_time")
@@ -605,9 +726,12 @@ class GameManager:
         self.human_id = data.get("human_id", 0)
         self.bot_id = data.get("bot_id", 1)
         self.bot_replacement_seat = data.get("bot_replacement_seat", None)
+        self.opening_cut_index = data.get("opening_cut_index")
         self.table_slots = [card_from_data(c) if c is not None else None for c in data.get("table_slots", [])]
         if not self.table_slots and self.state is not None:
             self.table_slots = self.state.table_cards.copy()
+        if self.state is not None:
+            self.state.match_scores = self.match_scores.copy()
 
     @classmethod
     def load(cls, room_id: str, store: GameStore) -> "GameManager":
@@ -620,6 +744,10 @@ class GameManager:
             raise RoomNotFoundError(f"Room {room_id!r} not found in store")
         manager = cls(room_id=room_id, store=store)
         manager._restore_from_game_data(blob.get("game", {}))
+        if manager.target_score is None:
+            fallback_ts = _coerce_target_score(blob.get("target_score_mp"))
+            if fallback_ts is not None:
+                manager.target_score = fallback_ts
         return manager
 
     @classmethod
@@ -666,9 +794,12 @@ class GameManager:
             self.state is not None
             and self.state.current_player == disconnected_seat
             and not self.state.is_round_over
+            and self.phase != GamePhase.CUT_DECISION
         ):
             self.phase = GamePhase.BOT_MOVING
             self._queue_bot_move()
+
+        self._try_bot_opening_cut_solo()
 
         logger.info(
             "Seat %d replaced with bot  room=%.8s  remaining_human=%d",
@@ -765,33 +896,18 @@ class GameManager:
                 return
 
     def _place_card_in_slots(self, card: Card, played_by: str = 'deal') -> int:
-        """Place card in a slot that matches the player's side.
+        """Place the card in the first empty table slot, scanning in slot order.
 
-        played_by='human' → prefers odd indices  (bottom row, player's side)
-        played_by='bot'   → prefers even indices (top row,    bot's side)
-        played_by='deal'  → fills first empty slot or appends (original behaviour)
+        Slots are paired per column: indices ``2*j`` and ``2*j+1`` are the top and
+        bottom cells of column ``j``. Filling left-to-right fills the centered column
+        first (column 0 is centered visually when many columns are shown), then
+        outward. ``played_by`` is kept for callers but does not affect placement.
         Returns the slot index used.
         """
-        if played_by == 'deal':
-            for i, slot in enumerate(self.table_slots):
-                if slot is None:
-                    self.table_slots[i] = card
-                    return i
-            self.table_slots.append(card)
-            return len(self.table_slots) - 1
-
-        preferred_parity = 1 if played_by == 'human' else 0  # human→odd, bot→even
-
-        # Reuse an existing empty slot that has the right row parity first
         for i, slot in enumerate(self.table_slots):
-            if slot is None and i % 2 == preferred_parity:
+            if slot is None:
                 self.table_slots[i] = card
                 return i
-
-        # No matching empty slot — append, inserting a None placeholder if needed
-        # so that the new card lands on the correct parity index.
-        if len(self.table_slots) % 2 != preferred_parity:
-            self.table_slots.append(None)  # placeholder keeps the 2-row grid aligned
         self.table_slots.append(card)
         return len(self.table_slots) - 1
 
@@ -861,6 +977,10 @@ class GameManager:
         Returns True if move was applied, False if invalid.
         """
         acting_seat = self.human_id if seat is None else seat
+
+        if self.phase == GamePhase.CUT_DECISION:
+            flash("Choose what to do with the cut card first.")
+            return False
 
         if self.phase not in (GamePhase.PLAYING_HUMAN, GamePhase.BOT_MOVING):
             logger.warning("Attempted selected move during phase: %s", self.phase)
@@ -1032,6 +1152,9 @@ class GameManager:
         self.final_points = round_points
         self.match_scores[0] += round_points[0]
         self.match_scores[1] += round_points[1]
+        if self.state is not None:
+            self.state.match_scores[0] = self.match_scores[0]
+            self.state.match_scores[1] = self.match_scores[1]
         # Stage round-end commentary (chkobba events take priority)
         if self.pending_commentary is None:
             diff = abs(round_points[0] - round_points[1])
@@ -1056,11 +1179,19 @@ class GameManager:
             f"Match: You {self.match_scores[0]} - Bot {self.match_scores[1]}"
         )
 
+        ts = _coerce_target_score(self.target_score)
+        match_points_capped = False
+        if ts is not None:
+            match_points_capped = self.match_scores[0] >= ts or self.match_scores[1] >= ts
+        else:
+            logger.error(
+                "Round ended but target_score is unset; match will not auto-end. room=%s match=%s",
+                self.room_id,
+                self.match_scores,
+            )
+
         # Check if match is over
-        if (
-            self.match_scores[0] >= self.target_score
-            or self.match_scores[1] >= self.target_score
-        ):
+        if match_points_capped:
             self.phase = GamePhase.MATCH_OVER
             if self.match_scores[0] > self.match_scores[1]:
                 self.match_winner = 0
@@ -1102,6 +1233,75 @@ class GameManager:
         except Exception as e:
             logger.error("Failed to persist match: %s", e)
 
+    def _view_data_cut_phase(self, viewer_seat: int, debug: bool, is_solo: bool) -> dict:
+        """Snapshot while waiting for the cutter to choose keep vs discard."""
+        assert self.state is not None and self.opening_cut_index is not None
+        my_id = viewer_seat
+        opp_id = 1 - viewer_seat
+        human = self.state.players[my_id]
+        opp = self.state.players[opp_id]
+        cut_card_obj = self.state.deck[self.opening_cut_index]
+        cut_str = card_to_str(cut_card_obj)
+        is_cutter = my_id == self.state.current_player
+
+        opp_name = BOT_DEFAULT_NAME
+        opp_mood = self._get_bot_mood() if is_solo else "😐"
+        if not is_solo and self._store:
+            blob = self._store.get(self.room_id)
+            if blob:
+                room_players = blob.get("players", [])
+                if opp_id < len(room_players):
+                    opp_name = room_players[opp_id].get("display_name", "Opponent")
+
+        return {
+            "show_start_screen": False,
+            "awaiting_cut_choice": True,
+            "cut_card": cut_str if is_cutter else None,
+            "is_opening_cutter": is_cutter,
+            "debug": debug,
+            "debug_data": {},
+            "capture_map": {},
+            "target_score": self.target_score,
+            "match_scores": self.match_scores,
+            "match_over": self.phase == GamePhase.MATCH_OVER,
+            "match_winner": self.match_winner,
+            "show_next_round": False,
+            "has_pending_bot": False,
+            "opp_first_js_deal": False,
+            "last_human_played_table_index": None,
+            "pending_bot_captured_indices": [],
+            "pending_bot_played_card": None,
+            "pending_bot_is_capture": False,
+            "pending_bot_is_chkobba": False,
+            "last_played_card": None,
+            "last_played_by": None,
+            "table_cards": [],
+            "table_slots": [],
+            "human_hand": [],
+            "human_captured_count": len(human.captured_cards),
+            "human_chkobbas": human.chkobbas,
+            "human_is_current": is_cutter,
+            "bot_name": opp_name,
+            "bot_mood": opp_mood,
+            "bot_hand_count": len(opp.hand),
+            "bot_captured_count": len(opp.captured_cards),
+            "bot_chkobbas": opp.chkobbas,
+            "move_buttons": [],
+            "round_over": False,
+            "messages": self.messages[-6:],
+            "last_human_move": self.last_human_move,
+            "last_bot_move": self.last_bot_move,
+            "final_points": self.final_points,
+            "round_breakdown": self.round_breakdown,
+            "commentary_toast": self._consume_commentary(),
+            "deck_remaining": len(self.state.deck),
+            "room_id": self.room_id,
+            "my_seat": viewer_seat,
+            "game_mode": self.mode,
+            "game_active": True,
+            "round_end_sweep": None,
+        }
+
     def view_data(self, viewer_seat: int = 0) -> dict:
         """Build a dict for the Jinja template / SocketIO state snapshot.
 
@@ -1127,8 +1327,22 @@ class GameManager:
                 "game_mode": self.mode,
             }
 
+        if self.phase == GamePhase.CUT_DECISION and self.opening_cut_index is not None:
+            return self._view_data_cut_phase(viewer_seat, debug, is_solo)
+
         my_id  = viewer_seat
         opp_id = 1 - viewer_seat
+
+        # One-shot: leftover table cards swept to last capturer (for client animation).
+        round_end_sweep_view: dict | None = None
+        if self.state.round_end_sweep is not None:
+            recv_seat, swept = self.state.round_end_sweep
+            round_end_sweep_view = {
+                "receiver_seat": recv_seat,
+                "to_human_side": recv_seat == my_id,
+                "cards": [card_to_str(c) for c in swept],
+            }
+            self.state.round_end_sweep = None
 
         human = self.state.players[my_id]
         opp   = self.state.players[opp_id]
@@ -1195,6 +1409,21 @@ class GameManager:
         pending_bot_is_capture     = self.pending_bot_is_capture if is_solo else False
         pending_bot_is_chkobba     = self.pending_bot_is_chkobba if is_solo else False
 
+        human_is_current = self.state.current_player == my_id
+
+        # Solo: bot leads with a pending *opening* move — client runs empty-board → deal animation.
+        # Must be gated on move_history == 0 so mid-round bot turns (also BOT_MOVING + pending)
+        # do not flip SSR / flags, and so a follow-up state_snapshot (e.g. vd_pending) does not
+        # look like a "fresh deal" client-side (isDeal false) and repaint the full board.
+        opp_first_js_deal = bool(
+            is_solo
+            and has_pending_bot
+            and not human_is_current
+            and len(human.hand) > 0
+            and len(opp.hand) > 0
+            and len(self.state.move_history) == 0
+        )
+
         # last_played_by is stored in absolute seat terms (seat 0 -> "human",
         # seat 1 -> "bot").  In multiplayer, seat 1's UI is mirrored by
         # view_data(), so we remap this flag to viewer-relative terms.
@@ -1216,6 +1445,7 @@ class GameManager:
             "match_winner": self.match_winner,
             "show_next_round": self.phase == GamePhase.ROUND_OVER,
             "has_pending_bot": has_pending_bot,
+            "opp_first_js_deal": opp_first_js_deal,
             "last_human_played_table_index": self.last_human_played_table_index,
             "pending_bot_captured_indices": pending_bot_captured_idxs,
             "pending_bot_played_card": pending_bot_played_card,
@@ -1238,7 +1468,7 @@ class GameManager:
             "human_hand": [card_to_str(c) for c in human.hand],
             "human_captured_count": len(human.captured_cards),
             "human_chkobbas": human.chkobbas,
-            "human_is_current": self.state.current_player == my_id,
+            "human_is_current": human_is_current,
 
             # Opponent ("bot" slot — could be the actual bot or the other human)
             "bot_name": opp_name,
@@ -1270,6 +1500,12 @@ class GameManager:
             "room_id": self.room_id,
             "my_seat": viewer_seat,
             "game_mode": self.mode,
+
+            "awaiting_cut_choice": False,
+            "cut_card": None,
+            "is_opening_cutter": False,
+            "game_active": True,
+            "round_end_sweep": round_end_sweep_view,
         }
 
 
@@ -1319,7 +1555,11 @@ def index():
 
     manager = _get_manager()
     # ?next_round=1 triggers auto-transition (used by "Next Round" button)
-    if request.args.get("next_round") == "1" and manager.state is not None:
+    if (
+        request.args.get("next_round") == "1"
+        and manager.state is not None
+        and manager.phase == GamePhase.ROUND_OVER
+    ):
         manager.next_round()
     ctx = manager.view_data()
 
@@ -1435,6 +1675,26 @@ def api_bot_move():
     return jsonify(manager.view_data())
 
 
+@app.route("/api/cut_choice", methods=["POST"])
+@csrf_protect
+def api_cut_choice():
+    """Solo: cutter commits keep (Path A) or discard to table (Path B)."""
+    manager = _get_manager()
+    if manager.state is None:
+        return jsonify({"error": "No game"}), 400
+    keep_raw = (request.form.get("keep") or "").strip().lower()
+    if keep_raw in ("1", "true", "yes", "keep"):
+        keep_cut = True
+    elif keep_raw in ("0", "false", "no", "discard", "table"):
+        keep_cut = False
+    else:
+        return jsonify({"error": "Invalid keep (use true or false)"}), 400
+    ok = manager.commit_opening_cut_choice(keep_cut, acting_seat=manager.human_id)
+    if not ok:
+        return jsonify({"error": "Cannot apply cut choice"}), 400
+    return jsonify(manager.view_data())
+
+
 @app.route("/api/profile/name", methods=["POST"])
 def api_update_name():
     """Update the guest's display name.  Accepts JSON: {name, _csrf_token}."""
@@ -1465,7 +1725,8 @@ def api_update_name():
 @csrf_protect
 def next_round():
     manager = _get_manager()
-    manager.next_round()
+    if manager.phase == GamePhase.ROUND_OVER:
+        manager.next_round()
     return redirect(url_for("index"))
 
 
@@ -1719,6 +1980,7 @@ def _empty_game_ctx() -> dict:
         "match_winner": None,
         "show_next_round": False,
         "has_pending_bot": False,
+        "opp_first_js_deal": False,
         "last_human_played_table_index": None,
         "pending_bot_captured_indices": [],
         "pending_bot_played_card": None,
@@ -1746,6 +2008,10 @@ def _empty_game_ctx() -> dict:
         "round_breakdown": [],
         "commentary_toast": None,
         "deck_remaining": 0,
+        "awaiting_cut_choice": False,
+        "cut_card": None,
+        "is_opening_cutter": False,
+        "game_active": False,
     }
 
 

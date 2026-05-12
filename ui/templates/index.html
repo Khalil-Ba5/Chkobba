@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en"{% if opp_first_js_deal|default(false) %} class="chk-opp-first-boot"{% endif %}>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
@@ -9,6 +9,12 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@700;900&family=Inter:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Caveat:wght@400;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="{{ static_url('style.css') }}">
+    {# Inline so first paint cannot show dealt cards before external CSS loads (FOUC). #}
+    <style>
+    html.chk-opp-first-boot #table-cards,
+    html.chk-opp-first-boot #hand-cards,
+    html.chk-opp-first-boot #bot-cards { visibility: hidden !important; }
+    </style>
     <meta name="csrf-token" content="{{ csrf_token() }}">
     <!-- Socket.IO client (Phase 3) — pinned CDN, no bundler required -->
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js" crossorigin="anonymous" integrity="sha384-2huaZvOR9iDzHqslqwpR87isEmrfxqyWOF7hr7BY6KG0+hVKLoEXMPUJw3ynWuhO"></script>
@@ -25,7 +31,7 @@
         <div class="hud-score you">
             <button class="hs-label player-name-btn" id="open-name-modal" title="Change your name" aria-label="Change name">
                 <span class="avatar-dot" style="background:{{ avatar_color }}">{{ avatar_initial }}</span>
-                <span class="hs-name-text">{{ display_name }}</span>
+                <span class="hs-name-text" title="{{ display_name|e }}">{{ display_name }}</span>
             </button>
             <span class="hs-val">{{ match_scores[0] }}</span>
         </div>
@@ -101,9 +107,6 @@
 
         <!-- Multiplayer entry points -->
         <div class="landing-mp-row">
-            <button id="landing-bot-btn" class="btn-mp btn-mp-primary" title="Play against the bot">
-                🤖 Play vs Bot
-            </button>
             <button id="landing-quickmatch-btn" class="btn-mp btn-mp-secondary" title="Find a random opponent">
                 ⚔ Quick Match — 1v1
             </button>
@@ -115,7 +118,7 @@
             </a>
         </div>
 
-        <div class="landing-divider"><span>or play solo vs bot</span></div>
+        <div class="landing-divider"><span>Solo</span></div>
 
         <div class="landing-box">
             {% if has_saved_session %}
@@ -147,6 +150,7 @@
 
 {% else %}
 <!-- ════════════════ GAME BOARD ════════════════ -->
+<p id="selection-hint" class="selection-hint" aria-live="polite">{% if awaiting_cut_choice|default(false) %}{% if is_opening_cutter|default(false) %}Choose: keep the cut card or put it on the table.{% else %}Waiting for your opponent to finish the cut.{% endif %}{% elif opp_first_js_deal|default(false) %}Dealing cards…{% else %}Tap a card from your hand to play{% endif %}</p>
 <div class="board{% if human_is_current and not round_over and not has_pending_bot %} player-active{% elif not round_over and not has_pending_bot and not human_is_current %} bot-active{% elif has_pending_bot %} bot-active{% endif %}" role="application" aria-label="Chkobba game board">
 
     <!-- ── Turn announcement (screen-reader only) ── -->
@@ -161,7 +165,8 @@
             </span>
             <span class="zone-stats"><span class="chk-star">{{ bot_chkobbas }}✦</span></span>
             <span class="zone-status">
-                {% if not human_is_current and not round_over and not has_pending_bot %}
+                {% if opp_first_js_deal|default(false) %}
+                {% elif not human_is_current and not round_over and not has_pending_bot %}
                     <span class="badge thinking">Thinking…</span>
                 {% elif has_pending_bot %}
                     <span class="badge thinking">Playing…</span>
@@ -170,12 +175,16 @@
         </div>
         <div class="zone-hand-row">
             <div class="zone-cards init-hidden" id="bot-cards">
+                {% if opp_first_js_deal|default(false) %}
+                <span class="zone-empty">No cards</span>
+                {% else %}
                 {% set hidden_count = (bot_hand_count - 1) if (has_pending_bot and pending_bot_played_card) else bot_hand_count %}
                 {% for _ in range([hidden_count, 0] | max) %}<div class="card card-back"></div>{% endfor %}
                 {% if has_pending_bot and pending_bot_played_card %}
                     <div class="card bot-capture-card {% if '♥' in pending_bot_played_card or '♦' in pending_bot_played_card %}red-suit{% endif %}">{{ pending_bot_played_card }}</div>
                 {% endif %}
                 {% if bot_hand_count == 0 and not has_pending_bot %}<span class="zone-empty">No cards</span>{% endif %}
+                {% endif %}
             </div>
             {% set cap_layers = 5 if bot_captured_count >= 20 else (4 if bot_captured_count >= 12 else (3 if bot_captured_count >= 5 else (2 if bot_captured_count >= 2 else (1 if bot_captured_count >= 1 else 0)))) %}
             <div class="cap-pile" id="bot-cap">
@@ -192,14 +201,31 @@
         <!-- Brand watermark — rendered behind the cards via z-index -->
         <div class="felt-logo" aria-hidden="true"></div>
         <div class="felt-cards" id="table-cards">
-            {% if table_slots and (table_slots | map(attribute='card') | select | list) %}
-                {% for slot in table_slots %}
-                    {% if slot.card %}
-                    <div class="card table-card {% if '♥' in slot.card or '♦' in slot.card %}red-suit{% endif %}{% if human_is_current and not round_over and not has_pending_bot %} selectable{% endif %}{% if loop.index0 == last_human_played_table_index %} human-played{% endif %}{% if slot.card == last_played_card and last_played_by == 'human' %} fly-from-human{% endif %}{% if slot.card == last_played_card and last_played_by == 'bot' %} fly-from-bot{% endif %}"
-                        data-table-index="{{ slot.table_index }}"
-                        data-card-str="{{ slot.card }}">{{ slot.card }}</div>
-                    {% else %}
-                    <div class="card table-slot-empty" aria-hidden="true"></div>
+            {% if opp_first_js_deal|default(false) %}
+                <p class="felt-empty">No cards on table</p>
+            {% elif table_slots and (table_slots | map(attribute='card') | select | list) %}
+                {% for i in range(0, table_slots | length, 2) %}
+                    {% set bot = table_slots[i] %}
+                    {% set human = table_slots[i + 1] if i + 1 < (table_slots | length) else none %}
+                    {% set has_bot = bot and bot.card %}
+                    {% set has_human = human is not none and human.card %}
+                    {% if has_bot or has_human %}
+                    <div class="table-col">
+                        {% if has_bot %}
+                        <div class="card table-card {% if '♥' in bot.card or '♦' in bot.card %}red-suit{% endif %}{% if human_is_current and not round_over and not has_pending_bot %} selectable{% endif %}{% if i == last_human_played_table_index %} human-played{% endif %}{% if bot.card == last_played_card and last_played_by == 'human' %} fly-from-human{% endif %}{% if bot.card == last_played_card and last_played_by == 'bot' %} fly-from-bot{% endif %}"
+                            data-table-index="{{ bot.table_index }}"
+                            data-card-str="{{ bot.card }}">{{ bot.card }}</div>
+                        {% else %}
+                        <div class="card table-slot-empty" aria-hidden="true"></div>
+                        {% endif %}
+                        {% if has_human %}
+                        <div class="card table-card {% if '♥' in human.card or '♦' in human.card %}red-suit{% endif %}{% if human_is_current and not round_over and not has_pending_bot %} selectable{% endif %}{% if (i + 1) == last_human_played_table_index %} human-played{% endif %}{% if human.card == last_played_card and last_played_by == 'human' %} fly-from-human{% endif %}{% if human.card == last_played_card and last_played_by == 'bot' %} fly-from-bot{% endif %}"
+                            data-table-index="{{ human.table_index }}"
+                            data-card-str="{{ human.card }}">{{ human.card }}</div>
+                        {% else %}
+                        <div class="card table-slot-empty" aria-hidden="true"></div>
+                        {% endif %}
+                    </div>
                     {% endif %}
                 {% endfor %}
             {% else %}
@@ -227,7 +253,9 @@
                 <span class="sr-only">{{ human_captured_count }} cards captured</span>
             </div>
             <div class="zone-cards init-hidden" id="hand-cards">
-                {% if human_hand %}
+                {% if opp_first_js_deal|default(false) %}
+                    <span class="zone-empty">No cards</span>
+                {% elif human_hand %}
                     {% for card in human_hand %}
                     <div class="card hand-card {% if '♥' in card or '♦' in card %}red-suit{% endif %}{% if human_is_current and not round_over and not has_pending_bot %} selectable{% endif %}"
                         data-hand-index="{{ loop.index0 }}">{{ card }}</div>
@@ -248,6 +276,27 @@
                     <span class="badge your-turn-badge">Your turn</span>
                 {% endif %}
             </span>
+        </div>
+    </div>
+
+    <!-- Opening cut: cutter chooses keep vs table (Path A / B) -->
+    <div class="cut-choice-overlay" id="cut-choice-overlay" role="dialog" aria-modal="true"
+         aria-labelledby="cut-choice-title"
+         style="display:{% if awaiting_cut_choice|default(false) %}flex{% else %}none{% endif %};">
+        <div class="cut-choice-panel">
+            <h2 id="cut-choice-title" class="cut-choice-title">Deck cut</h2>
+            {% if awaiting_cut_choice|default(false) and is_opening_cutter|default(false) and cut_card %}
+            <p class="cut-choice-lead">You play first. This is the top card of the lower half after the cut.</p>
+            <div id="cut-card-display" class="card cut-card-display {% if '♥' in cut_card or '♦' in cut_card %}red-suit{% endif %}">{{ cut_card }}</div>
+            <div class="cut-choice-actions">
+                <button type="button" class="btn-deal" id="cut-keep-btn" data-keep="true">Keep in hand</button>
+                <button type="button" class="btn-deal btn-secondary" id="cut-discard-btn" data-keep="false">Put on table</button>
+            </div>
+            <p class="cut-choice-rules"><strong>Keep</strong>: card in your hand + 2 dealt; opponent 3; 4 on table.<br>
+            <strong>Table</strong>: card on table + 3 more on table; you 3; opponent 3.</p>
+            {% elif awaiting_cut_choice|default(false) %}
+            <p class="cut-choice-wait">Waiting for the dealer to finish the opening deal…</p>
+            {% endif %}
         </div>
     </div>
 
@@ -354,6 +403,7 @@
 <script type="application/json" id="page-state">{{ {
     "show_start_screen":            false,
     "has_pending_bot":              has_pending_bot,
+    "opp_first_js_deal":            opp_first_js_deal|default(false),
     "human_is_current":             human_is_current,
     "capture_map":                  capture_map,
     "pending_bot_played_card":      pending_bot_played_card,
@@ -380,7 +430,11 @@
     "game_mode":                    "solo",
     "display_name":                 display_name,
     "avatar_initial":               avatar_initial,
-    "avatar_color":                 avatar_color
+    "avatar_color":                 avatar_color,
+    "awaiting_cut_choice":          awaiting_cut_choice|default(false),
+    "cut_card":                     cut_card|default(none),
+    "is_opening_cutter":            is_opening_cutter|default(false),
+    "round_end_sweep":              round_end_sweep|default(none)
 } | tojson | safe }}</script>
 {% endif %}
 
@@ -517,6 +571,8 @@
 'use strict';
 
 var EASE = 'cubic-bezier(0.22,1,0.36,1)';
+var DEAL_ANIM_MULT = 2.35;
+function dealMs(x){ return Math.max(32, Math.round(x / DEAL_ANIM_MULT)); }
 var CSRF = (document.querySelector('meta[name="csrf-token"]') || {}).getAttribute('content') || '';
 var _busy  = false;
 var _state = null; // authoritative game-state cache; kept in sync with every server response
@@ -524,18 +580,18 @@ var _prevHumanHandLen = 0;
 var _prevBotHandCount = 0;
 var _prevDeckRemaining = 0;
 var _prevHumanHand = [];
+var _prevAwaitingCutChoice = false;
+var _lastSeenCutCard = null;
 
 // ── Client-side state prediction ─────────────────────────────────────────
-// Mirrors _place_card_in_slots() in app.py (human→odd rows, bot→even rows).
-function _placeOptimistic(slots, card, isHuman){
-    var par = isHuman ? 1 : 0;
+// Mirrors _place_card_in_slots() in app.py (first empty slot in column order).
+function _placeOptimistic(slots, card){
     for(var i=0;i<slots.length;i++){
-        if(slots[i].card===null && i%2===par){
+        if(slots[i].card===null){
             slots[i]={card:card, table_index:null}; return;
         }
     }
-    if(slots.length%2!==par) slots.push({card:null,table_index:null});
-    slots.push({card:card,table_index:null});
+    slots.push({card:card, table_index:null});
 }
 
 // Build a predicted copy of _state after the human plays handIdx → tableIdxs.
@@ -576,7 +632,7 @@ function predictPlay(state, handIdx, tableIdxs){
         var rem = pred.table_slots.filter(function(s){return s.card!==null;});
         if(rem.length===0) pred.human_chkobbas++; // chkobba
     } else {
-        _placeOptimistic(pred.table_slots, playedCard, true);
+        _placeOptimistic(pred.table_slots, playedCard);
     }
     return pred;
 }
@@ -635,9 +691,37 @@ function hideSync(){ if(_dot) _dot.classList.remove('active'); }
 function isRed(card){ return card && (card.indexOf('♥')>=0 || card.indexOf('♦')>=0); }
 function rectObj(r){ return {left:r.left, top:r.top, width:r.width, height:r.height}; }
 
+// Deck stack can be hidden or not laid out yet — avoid (0,0) top-left fly origin.
+function getDeckFlyOrigin(){
+    var deck=document.querySelector('.deck-stack');
+    if(deck){
+        var dr=deck.getBoundingClientRect();
+        if(dr.width>8 && dr.height>8)
+            return {x:dr.left+dr.width/2, y:dr.top+dr.height/2};
+    }
+    var felt=document.querySelector('.felt-cards')||document.querySelector('.felt')||document.querySelector('.board');
+    if(felt){
+        var fr=felt.getBoundingClientRect();
+        if(fr.width>8 && fr.height>8)
+            return {x:fr.right-Math.min(64,fr.width*0.1), y:fr.top+Math.min(80,fr.height*0.14)};
+    }
+    var w=window.innerWidth, h=window.innerHeight;
+    return {x:w*0.86, y:h*0.26};
+}
+
+/** Visible fly duration when several cards move together (captures). */
+function pileFlyDurationMs(base, n){
+    base = base || 600;
+    n = n || 0;
+    if(n <= 1) return base;
+    return Math.max(base, 720 + (n - 1) * 100);
+}
+
 // Animate captured cards from the table to a capture pile (human or bot)
 function flyToPile(elements, targetSelector, duration){
     duration = duration || 600;
+    var n = elements && elements.length ? elements.length : 0;
+    if(n > 1) duration = pileFlyDurationMs(duration, n);
     var target = document.querySelector(targetSelector);
     if(!target || !elements || !elements.length) return;
     var tr = target.getBoundingClientRect();
@@ -677,72 +761,197 @@ function flyToPile(elements, targetSelector, duration){
     });
 }
 
-// ── Deal animation: cards fly one-by-one from the deck to each hand ────────
-function animateDeal(st){
-    var deck = document.querySelector('.deck-stack');
-    if(!deck) return;
-    var dr = deck.getBoundingClientRect();
-    var deckX = dr.left + dr.width/2;
-    var deckY = dr.top + dr.height/2;
-
-    var botCards = Array.from(document.querySelectorAll('#bot-cards .card:not(.bot-capture-card)'));
-    var humanCards = Array.from(document.querySelectorAll('#hand-cards .card'));
-
-    // Interleave: bot0, human0, bot1, human1, bot2, human2
-    var seq = [];
-    var maxLen = Math.max(botCards.length, humanCards.length);
-    for(var i=0; i<maxLen; i++){
-        if(botCards[i]) seq.push({el: botCards[i], isBot: true});
-        if(humanCards[i]) seq.push({el: humanCards[i], isBot: false});
-    }
-    if(!seq.length) return;
-
-    // Use visibility:hidden so layout is preserved and getBoundingClientRect stays correct
-    seq.forEach(function(item){ item.el.style.visibility = 'hidden'; });
-
-    seq.forEach(function(item, idx){
-        setTimeout(function(){
-            var r = item.el.getBoundingClientRect();
-            var clone = document.createElement('div');
-            clone.className = 'card card-back';
-            clone.style.position = 'fixed';
-            clone.style.left = (deckX - r.width/2) + 'px';
-            clone.style.top = (deckY - r.height/2) + 'px';
-            clone.style.width = r.width + 'px';
-            clone.style.height = r.height + 'px';
-            clone.style.margin = '0';
-            clone.style.zIndex = '999';
-            clone.style.transition = 'transform 500ms cubic-bezier(.25, .85, .35, 1)';
-            clone.style.pointerEvents = 'none';
-            clone.style.opacity = '1';
-            clone.style.boxShadow = '0 6px 18px rgba(0,0,0,.5)';
-            document.body.appendChild(clone);
-
-            var tx = (r.left + r.width/2) - deckX;
-            var ty = (r.top + r.height/2) - deckY;
-            var rot = item.isBot ? -8 : 8;
-
-            requestAnimationFrame(function(){
-                requestAnimationFrame(function(){
-                    clone.style.transform = 'translate(' + tx.toFixed(1) + 'px, ' + ty.toFixed(1) + 'px) rotate(' + rot + 'deg)';
-                });
-            });
-
-            setTimeout(function(){
-                if(clone.parentNode) clone.parentNode.removeChild(clone);
-                item.el.style.visibility = 'visible';
-            }, 500);
-        }, idx * 250);
+function animateRoundEndSweep(sweep, onDone){
+    if(!sweep || !sweep.cards || !sweep.cards.length){ if(onDone) onDone(); return; }
+    var target = sweep.to_human_side ? '#player-cap' : '#bot-cap';
+    var els = Array.from(document.querySelectorAll('#table-cards .table-card:not(.table-slot-empty)'));
+    if(!els.length){ if(onDone) onDone(); return; }
+    var dur = Math.max(dealMs(520), 720);
+    var stag = Math.max(dealMs(110), 100);
+    els.forEach(function(el, i){
+        setTimeout(function(){ flyToPile([el], target, dur); }, i * stag);
     });
+    setTimeout(function(){ if(onDone) onDone(); }, Math.max(0, (els.length - 1) * stag) + dur + 200);
+}
+
+// ── Deal animation: cards fly one-by-one from the deck to each hand ────────
+function animateDeal(st, onDone){
+    requestAnimationFrame(function(){
+        requestAnimationFrame(function(){
+            var o = getDeckFlyOrigin();
+            var deckX = o.x, deckY = o.y;
+
+            var botCards = Array.from(document.querySelectorAll('#bot-cards .card:not(.bot-capture-card)'));
+            var humanCards = Array.from(document.querySelectorAll('#hand-cards .card'));
+
+            var seq = [];
+            var maxLen = Math.max(botCards.length, humanCards.length);
+            for(var i=0; i<maxLen; i++){
+                if(botCards[i]) seq.push({el: botCards[i], isBot: true});
+                if(humanCards[i]) seq.push({el: humanCards[i], isBot: false});
+            }
+            if(!seq.length){ if(onDone) onDone(); return; }
+
+            seq.forEach(function(item){ item.el.style.visibility = 'hidden'; });
+
+            seq.forEach(function(item, idx){
+                setTimeout(function(){
+                    var r = item.el.getBoundingClientRect();
+                    var clone = document.createElement('div');
+                    clone.className = 'card card-back';
+                    clone.style.position = 'fixed';
+                    clone.style.left = (deckX - r.width/2) + 'px';
+                    clone.style.top = (deckY - r.height/2) + 'px';
+                    clone.style.width = r.width + 'px';
+                    clone.style.height = r.height + 'px';
+                    clone.style.margin = '0';
+                    clone.style.zIndex = '999';
+                    clone.style.transition = 'transform ' + dealMs(500) + 'ms cubic-bezier(.25, .85, .35, 1)';
+                    clone.style.pointerEvents = 'none';
+                    clone.style.opacity = '1';
+                    clone.style.boxShadow = '0 6px 18px rgba(0,0,0,.5)';
+                    document.body.appendChild(clone);
+
+                    var tx = (r.left + r.width/2) - deckX;
+                    var ty = (r.top + r.height/2) - deckY;
+                    var rot = item.isBot ? -8 : 8;
+
+                    requestAnimationFrame(function(){
+                        requestAnimationFrame(function(){
+                            clone.style.transform = 'translate(' + tx.toFixed(1) + 'px, ' + ty.toFixed(1) + 'px) rotate(' + rot + 'deg)';
+                        });
+                    });
+
+                    setTimeout(function(){
+                        if(clone.parentNode) clone.parentNode.removeChild(clone);
+                        item.el.style.visibility = 'visible';
+                    }, dealMs(500));
+                }, idx * dealMs(250));
+            });
+            var lastEnd = seq.length ? (seq.length - 1) * dealMs(250) + dealMs(500) + 80 : 0;
+            if(onDone) setTimeout(onDone, lastEnd);
+        });
+    });
+}
+
+// Opponent opens: fly table cards from deck, then interleaved hand deal (animateDeal).
+function animateOppFirstFullDeal(st, onDone){
+    requestAnimationFrame(function(){
+        requestAnimationFrame(function(){
+            var tableEls = Array.from(document.querySelectorAll('#table-cards .table-card:not(.table-slot-empty)'));
+            var DUR = dealMs(520);
+            var TSTAG = dealMs(150);
+            var i;
+            for(i = 0; i < tableEls.length; i++){
+                flyFromDeckToEl(tableEls[i], i * TSTAG, { dur: DUR, rot: (i % 2 ? 5 : -5) });
+            }
+            var tableDone = tableEls.length ? (tableEls.length - 1) * TSTAG + DUR + dealMs(90) : 0;
+            setTimeout(function(){
+                animateDeal(st, onDone);
+            }, tableDone);
+        });
+    });
+}
+
+// Fly a face-down card from the deck stack to *el* (target hidden until clone lands).
+function flyFromDeckToEl(el, delayMs, opts){
+    opts = opts || {};
+    var dur = opts.dur != null ? opts.dur : dealMs(520);
+    var rot = opts.rot != null ? opts.rot : 0;
+    setTimeout(function(){
+        if(!el || !el.parentNode) return;
+        var o = getDeckFlyOrigin();
+        var deckX = o.x, deckY = o.y;
+        var r = el.getBoundingClientRect();
+        el.style.visibility = 'hidden';
+        var clone = document.createElement('div');
+        clone.className = 'card card-back';
+        clone.style.cssText = 'position:fixed;left:'+(deckX-r.width/2)+'px;top:'+(deckY-r.height/2)+'px;width:'+r.width+'px;height:'+r.height+'px;margin:0;z-index:1000;transition:transform '+dur+'ms cubic-bezier(.25,.85,.35,1);pointer-events:none;box-shadow:0 6px 18px rgba(0,0,0,.5);';
+        document.body.appendChild(clone);
+        var tx = (r.left + r.width/2) - deckX;
+        var ty = (r.top + r.height/2) - deckY;
+        requestAnimationFrame(function(){
+            requestAnimationFrame(function(){
+                clone.style.transform = 'translate('+tx.toFixed(1)+'px,'+ty.toFixed(1)+'px) rotate('+rot+'deg)';
+            });
+        });
+        setTimeout(function(){
+            if(clone.parentNode) clone.parentNode.removeChild(clone);
+            el.style.visibility = 'visible';
+        }, dur + 40);
+    }, delayMs || 0);
+}
+
+// After opening cut: human chose keep (viewer is cutter) — cut in hand, then 2 to hand, 3 to opp, 4 to table.
+// Human chose discard — cut on table, then 3 to table, 3 to hand, 3 to bot.
+// *cutStr* is the card the cutter saw (for discard path: which table slot appeared first).
+function animateOpeningDealSequenced(st, kind, cutStr, onDone){
+    var DUR = dealMs(520);
+    var STAG = dealMs(260);
+    var GAP = dealMs(160);
+    var humanCards = Array.from(document.querySelectorAll('#hand-cards .hand-card'));
+    var botCards = Array.from(document.querySelectorAll('#bot-cards .card:not(.bot-capture-card)'));
+    var tableCards = Array.from(document.querySelectorAll('#table-cards .table-card:not(.table-slot-empty)'));
+    function hideAll(els){ els.forEach(function(e){ if(e) e.style.visibility = 'hidden'; }); }
+    function showEl(e){ if(e) e.style.visibility = 'visible'; }
+    var lastEnd = 0;
+    function plan(el, startT, opts){
+        flyFromDeckToEl(el, startT, opts);
+        lastEnd = Math.max(lastEnd, startT + DUR + 80);
+    }
+    if(kind === 'keep_cutter'){
+        hideAll(humanCards.concat(botCards).concat(tableCards));
+        showEl(humanCards[0]);
+        lastEnd = GAP + 120;
+        var t = GAP;
+        plan(humanCards[1], t, {rot: 8, dur: DUR});
+        t += STAG + DUR;
+        plan(humanCards[2], t, {rot: 8, dur: DUR});
+        t += STAG + DUR + GAP;
+        for(var bi = 0; bi < 3; bi++){
+            plan(botCards[bi], t, {rot: -8, dur: DUR});
+            t += STAG + DUR;
+        }
+        t += GAP;
+        for(var ti = 0; ti < tableCards.length; ti++){
+            plan(tableCards[ti], t, {rot: (ti % 2 ? 6 : -6), dur: DUR});
+            t += STAG + DUR;
+        }
+    } else if(kind === 'discard_cutter'){
+        hideAll(humanCards.concat(botCards).concat(tableCards));
+        var cutT = null;
+        for(var ci = 0; ci < tableCards.length; ci++){
+            if(tableCards[ci] && cutStr && tableCards[ci].dataset.cardStr === cutStr){ cutT = tableCards[ci]; break; }
+        }
+        if(cutT) showEl(cutT);
+        else if(tableCards[0]){ showEl(tableCards[0]); cutT = tableCards[0]; }
+        lastEnd = GAP + 120;
+        var otherT = tableCards.filter(function(c){ return c !== cutT; });
+        var t2 = GAP;
+        for(var oi = 0; oi < otherT.length; oi++){
+            plan(otherT[oi], t2, {rot: (oi % 2 ? 5 : -5), dur: DUR});
+            t2 += STAG + DUR;
+        }
+        t2 += GAP;
+        for(var hi = 0; hi < humanCards.length; hi++){
+            plan(humanCards[hi], t2, {rot: 8, dur: DUR});
+            t2 += STAG + DUR;
+        }
+        t2 += GAP;
+        for(var bj = 0; bj < botCards.length; bj++){
+            plan(botCards[bj], t2, {rot: -8, dur: DUR});
+            t2 += STAG + DUR;
+        }
+    }
+    if(lastEnd <= 0 && onDone) onDone();
+    else if(onDone) setTimeout(onDone, lastEnd);
 }
 
 // ── Mid-round draw: animate cards from deck to hand by DOM index ────────
 function animateDrawCards(selector, indices){
-    var deck = document.querySelector('.deck-stack');
-    if(!deck || !indices || !indices.length) return;
-    var dr = deck.getBoundingClientRect();
-    var deckX = dr.left + dr.width/2;
-    var deckY = dr.top + dr.height/2;
+    if(!indices || !indices.length) return;
+    var o = getDeckFlyOrigin();
+    var deckX = o.x, deckY = o.y;
 
     var cards = document.querySelectorAll(selector);
     indices.forEach(function(idx, order){
@@ -753,7 +962,7 @@ function animateDrawCards(selector, indices){
 
         var clone = document.createElement('div');
         clone.className = 'card card-back';
-        clone.style.cssText = 'position:fixed;left:'+(deckX-r.width/2)+'px;top:'+(deckY-r.height/2)+'px;width:'+r.width+'px;height:'+r.height+'px;margin:0;z-index:999;transition:transform 500ms cubic-bezier(.25,.85,.35,1);pointer-events:none;box-shadow:0 6px 18px rgba(0,0,0,.5);';
+        clone.style.cssText = 'position:fixed;left:'+(deckX-r.width/2)+'px;top:'+(deckY-r.height/2)+'px;width:'+r.width+'px;height:'+r.height+'px;margin:0;z-index:999;transition:transform '+dealMs(500)+'ms cubic-bezier(.25,.85,.35,1);pointer-events:none;box-shadow:0 6px 18px rgba(0,0,0,.5);';
         document.body.appendChild(clone);
 
         var tx = (r.left + r.width/2) - deckX;
@@ -765,17 +974,18 @@ function animateDrawCards(selector, indices){
                     clone.style.transform = 'translate('+tx.toFixed(1)+'px,'+ty.toFixed(1)+'px)';
                 });
             });
-        }, order * 120);
+        }, order * dealMs(120));
 
         setTimeout(function(){
             if(clone.parentNode) clone.parentNode.removeChild(clone);
             cardEl.style.visibility = 'visible';
-        }, 550 + order * 120);
+        }, dealMs(550) + order * dealMs(120));
     });
 }
 
 // ── Shared bot capture animation (SocketIO + AJAX) ────────────────────────
 var _botCaptureTimer = null;
+var OPP_CAPTURE_REVEAL_MS = 500;
 
 function animateBotCapture(st){
     if(_botCaptureTimer) return; // already scheduled
@@ -784,24 +994,29 @@ function animateBotCapture(st){
         return document.querySelector('[data-table-index="'+ci+'"]');
     }).filter(Boolean);
 
-    if(st.pending_bot_is_chkobba && window.chkobbaAnimation){
-        capEls.forEach(function(e){e.classList.add('chkobba-glow');});
-        var felt = document.querySelector('.felt-cards') || document.querySelector('.felt');
-        setTimeout(function(){
-            window.chkobbaAnimation(felt, function(){
+    function runBotCapture(){
+        if(st.pending_bot_is_chkobba && window.chkobbaAnimation){
+            capEls.forEach(function(e){e.classList.add('chkobba-glow');});
+            var felt = document.querySelector('.felt-cards') || document.querySelector('.felt');
+            setTimeout(function(){
+                window.chkobbaAnimation(felt, function(){
+                    _botCaptureTimer = null;
+                });
+            }, 200);
+            _botCaptureTimer = -1;
+        } else {
+            capEls.forEach(function(e){e.classList.add('capture-flash');});
+            var flyEls = capEls.slice();
+            if(bc) flyEls.push(bc);
+            var flyMs = pileFlyDurationMs(600, flyEls.length);
+            flyToPile(flyEls, '#bot-cap', flyMs);
+            _botCaptureTimer = setTimeout(function(){
                 _botCaptureTimer = null;
-            });
-        }, 200);
-        _botCaptureTimer = -1; // non-timeout flag
-    } else {
-        capEls.forEach(function(e){e.classList.add('capture-flash');});
-        var flyEls = capEls.slice();
-        if(bc) flyEls.push(bc);
-        flyToPile(flyEls, '#bot-cap', 600);
-        _botCaptureTimer = setTimeout(function(){
-            _botCaptureTimer = null;
-        }, 800);
+            }, OPP_CAPTURE_REVEAL_MS + flyMs + 100);
+        }
     }
+
+    _botCaptureTimer = setTimeout(runBotCapture, OPP_CAPTURE_REVEAL_MS);
 }
 
 function enhance(el){
@@ -835,7 +1050,7 @@ function buildHand(cards, sel){
     }).join('');
 }
 
-// Build table HTML: each bot/human pair becomes a column (left→right during play)
+// Build table HTML: each column is two stacked slots (top then bottom); cards fill in slot order
 function buildTable(slots, sel, lastCard, lastBy){
     if(!slots) return '<p class="felt-empty">No cards on table</p>';
     var hasSome = slots.some(function(s){return s.card;});
@@ -869,6 +1084,28 @@ function buildTable(slots, sel, lastCard, lastBy){
     return html;
 }
 
+/** Table DOM for round-end sweep when server snapshot has already cleared table_cards. */
+function buildRoundEndTableFromSweepCards(cards){
+    if(!cards || !cards.length) return '<p class="felt-empty">No cards on table</p>';
+    var html = '';
+    for(var i = 0; i < cards.length; i += 2){
+        var c0 = cards[i], c1 = cards[i + 1];
+        html += '<div class="table-col">';
+        if(c0){
+            html += '<div class="card table-card'+(isRed(c0)?' red-suit':'')+'" data-table-index="" data-card-str="'+c0+'">'+c0+'</div>';
+        } else {
+            html += '<div class="card table-slot-empty" aria-hidden="true"></div>';
+        }
+        if(c1){
+            html += '<div class="card table-card'+(isRed(c1)?' red-suit':'')+'" data-table-index="" data-card-str="'+c1+'">'+c1+'</div>';
+        } else {
+            html += '<div class="card table-slot-empty" aria-hidden="true"></div>';
+        }
+        html += '</div>';
+    }
+    return html;
+}
+
 function buildCapPile(count){
     if(!count) return '';
     var layers=count>=20?5:count>=12?4:count>=5?3:count>=2?2:1;
@@ -898,7 +1135,7 @@ function _hashStr(s){
     return Math.abs(h);
 }
 
-// ── Center table columns if > 3 (called only after deal animation) ───────
+// ── Reorder columns center-out when > 3 (only after a full re-deal — see schedule…) ───────
 function centerTableCols(){
     var cols=document.querySelectorAll('#table-cards .table-col');
     if(cols.length<=3) return;
@@ -909,6 +1146,13 @@ function centerTableCols(){
             col.style.order=side*Math.ceil(i/2);
         }
     });
+}
+
+// After both players empty their 3-card hands and new hands are dealt: apply column order only then
+// (avoids mid-trick jumps). Row stays centered via CSS .felt-cards { justify-content: center }.
+function scheduleTableColumnAdjustAfterDeal(st){
+    var maxC=Math.max(st.human_hand?st.human_hand.length:0,st.bot_hand_count||0);
+    setTimeout(centerTableCols, dealMs(maxC*250+600));
 }
 
 // ── Scatter + FLIP on the table container ─────────────────────────────────
@@ -983,14 +1227,156 @@ function takeSnap(fromEl, isBot){
     return snap;
 }
 
+function _escapeCutHtml(s){
+    var d=document.createElement('div'); d.textContent=s||''; return d.innerHTML;
+}
+function updateCutOverlay(st){
+    var el=document.getElementById('cut-choice-overlay');
+    if(!el) return;
+    if(!st.awaiting_cut_choice){ el.style.display='none'; return; }
+    el.style.display='flex';
+    var panel=el.querySelector('.cut-choice-panel');
+    if(!panel) return;
+    if(st.is_opening_cutter && st.cut_card){
+        _lastSeenCutCard = st.cut_card;
+        var red=(/[♥♦]/).test(st.cut_card)?' red-suit':'';
+        panel.innerHTML='<h2 id="cut-choice-title" class="cut-choice-title">Deck cut</h2>'+
+            '<p class="cut-choice-lead">You play first. This is the top card of the lower half after the cut.</p>'+
+            '<div id="cut-card-display" class="card cut-card-display'+red+'">'+_escapeCutHtml(st.cut_card)+'</div>'+
+            '<div class="cut-choice-actions">'+
+            '<button type="button" class="btn-deal" id="cut-keep-btn">Keep in hand</button>'+
+            '<button type="button" class="btn-deal btn-secondary" id="cut-discard-btn">Put on table</button></div>'+
+            '<p class="cut-choice-rules"><strong>Keep</strong>: card in your hand + 2 dealt; opponent 3; 4 on table.<br>'+
+            '<strong>Table</strong>: card on table + 3 more on table; you 3; opponent 3.</p>';
+        var cd=document.getElementById('cut-card-display'); if(cd) enhance(cd);
+        bindCutChoiceButtons();
+    } else {
+        panel.innerHTML='<h2 class="cut-choice-title">Deck cut</h2>'+
+            '<p class="cut-choice-wait">Waiting for your opponent to finish the cut.</p>';
+    }
+}
+function bindCutChoiceButtons(){
+    function send(keep){
+        if(window.Game&&window.Game.socket&&window.Game.socket.connected&&_state&&_state.room_id){
+            window.Game.socket.emit('cut_choice',{room_id:_state.room_id,keep:keep});
+            return;
+        }
+        var fd=new FormData();
+        fd.append('_csrf_token',CSRF);
+        fd.append('keep',keep?'true':'false');
+        fetch('/api/cut_choice',{method:'POST',body:fd})
+            .then(function(r){if(!r.ok)throw new Error('HTTP');return r.json();})
+            .then(function(resp){ if(resp.error){ console.warn(resp.error); return; } applyState(resp,null); })
+            .catch(function(){ window.location.reload(); });
+    }
+    var kb=document.getElementById('cut-keep-btn');
+    var db=document.getElementById('cut-discard-btn');
+    if(kb&&!kb._cutBound){ kb._cutBound=true; kb.addEventListener('click',function(){ send(true); }); }
+    if(db&&!db._cutBound){ db._cutBound=true; db.addEventListener('click',function(){ send(false); }); }
+}
+
 // ── Apply full JSON state to the DOM ─────────────────────────────────────
-function applyState(st, snap){
+function applyState(st, snap, prevState){
     if(!st||st.show_start_screen){ window.location.reload(); return; }
 
-    // Round / match over → reload so Jinja2 renders the scorecard / modal
-    if(st.round_over||st.match_over){ window.location.reload(); return; }
+    // Round over: wait 1s so the final table is visible, then sweep → scorecard
+    if(st.match_over){ window.location.reload(); return; }
+    if(st.round_over){
+        var tcRo = document.getElementById('table-cards');
+        if(tcRo){
+            var hasTRo = tcRo.querySelector('.table-card:not(.table-slot-empty)');
+            if(!hasTRo){
+                if(st.round_end_sweep && st.round_end_sweep.cards && st.round_end_sweep.cards.length){
+                    tcRo.innerHTML = buildRoundEndTableFromSweepCards(st.round_end_sweep.cards);
+                    tcRo.querySelectorAll('.table-card:not(.table-slot-empty)').forEach(enhance);
+                    scatterAndFlip(tcRo, null);
+                } else if(st.table_slots && st.table_slots.length){
+                    var someSlots = st.table_slots.some(function(s){ return s && s.card; });
+                    if(someSlots){
+                        tcRo.innerHTML = buildTable(st.table_slots, false, st.last_played_card, st.last_played_by);
+                        tcRo.querySelectorAll('.table-card:not(.table-slot-empty)').forEach(enhance);
+                        scatterAndFlip(tcRo, null);
+                    }
+                }
+            }
+        }
+        var hcRo = document.getElementById('hand-cards');
+        var bcRo = document.getElementById('bot-cards');
+        if(hcRo) hcRo.innerHTML = buildHand(st.human_hand || [], false);
+        if(bcRo) bcRo.innerHTML = buildBotHand(st.bot_hand_count || 0, false, null);
+        var goRoundReload = function(){
+            try {
+                var path = window.location.pathname;
+                var sp = new URLSearchParams(window.location.search || '');
+                sp.delete('next_round');
+                var q = sp.toString();
+                window.location.href = q ? (path + '?' + q) : path;
+            }
+            catch(e) { window.location.href = window.location.pathname; }
+        };
+        setTimeout(function(){
+            if(st.round_end_sweep && st.round_end_sweep.cards && st.round_end_sweep.cards.length){
+                var elsSweep = Array.from(document.querySelectorAll('#table-cards .table-card:not(.table-slot-empty)'));
+                if(elsSweep.length){
+                    animateRoundEndSweep(st.round_end_sweep, function(){ setTimeout(goRoundReload, 350); });
+                    return;
+                }
+            }
+            goRoundReload();
+        }, 1000);
+        return;
+    }
+
+    /* Leaving opening cut into a solo deal where the bot leads: hide zones before any repaint (no SSR boot class). */
+    if(
+        !st.awaiting_cut_choice &&
+        _prevAwaitingCutChoice &&
+        (st.game_mode === 'solo' || !st.game_mode) &&
+        st.has_pending_bot &&
+        !st.human_is_current &&
+        st.human_hand && st.human_hand.length > 0 &&
+        (st.bot_hand_count || 0) > 0 &&
+        st.opp_first_js_deal !== false
+    ){
+        document.documentElement.classList.add('chk-opp-first-boot');
+    }
 
     var human = !!(st.human_is_current && !st.round_over && !st.has_pending_bot);
+    var wasAwaitingCut = _prevAwaitingCutChoice;
+    if(!st.awaiting_cut_choice){
+        var cutOvlEarly = document.getElementById('cut-choice-overlay');
+        if(cutOvlEarly) cutOvlEarly.style.display = 'none';
+    }
+
+    var isDeal = _prevHumanHandLen===0 && _prevBotHandCount===0 &&
+                 st.human_hand && st.human_hand.length>0 && st.bot_hand_count>0;
+
+    var openingSeq = null;
+    if(isDeal && wasAwaitingCut && _lastSeenCutCard && st.human_hand && st.human_hand.length === 3){
+        if(st.human_hand[0] === _lastSeenCutCard) openingSeq = 'keep_cutter';
+        else if(st.human_hand.indexOf(_lastSeenCutCard) < 0) openingSeq = 'discard_cutter';
+    }
+
+    var oppOpensFirstDeal = !openingSeq && (st.opp_first_js_deal === false ? false : !!(
+        isDeal && st.has_pending_bot && !st.human_is_current &&
+        (st.game_mode === 'solo' || !st.game_mode) &&
+        (st.opp_first_js_deal === true || !wasAwaitingCut)
+    ));
+
+    /* Solo bot opens: follow-up snapshot (e.g. vd_pending) is not isDeal — skip full table/hand rebuild or it flashes over the intro. */
+    var openingOppPaintHold = !!(st.opp_first_js_deal === true && !oppOpensFirstDeal && !openingSeq &&
+        st.has_pending_bot && !st.human_is_current && (st.game_mode === 'solo' || !st.game_mode));
+
+    // Opponent opens first: clear felt + hands immediately so we never paint a full deal then wipe it.
+    var tc=document.getElementById('table-cards');
+    var hc=document.getElementById('hand-cards');
+    var bc=document.getElementById('bot-cards');
+    if(oppOpensFirstDeal){
+        document.documentElement.classList.remove('chk-opp-first-boot');
+        if(tc) tc.innerHTML='<p class="felt-empty">No cards on table</p>';
+        if(hc) hc.innerHTML='<span class="zone-empty">No cards</span>';
+        if(bc) bc.innerHTML='<span class="zone-empty">No cards</span>';
+    }
 
     // Board classes
     var board=document.querySelector('.board');
@@ -1010,8 +1396,12 @@ function applyState(st, snap){
     var bCap=document.getElementById('bot-cap');
     if(bCap) bCap.innerHTML=buildCapPile(st.bot_captured_count);
     var bStatus=document.querySelector('.opp-zone .zone-status');
-    if(bStatus) bStatus.innerHTML=st.has_pending_bot?'<span class="badge thinking">Playing…</span>':
-                                  (!st.human_is_current?'<span class="badge thinking">Thinking…</span>':'');
+    if(bStatus){
+        if(oppOpensFirstDeal && !st.awaiting_cut_choice) bStatus.innerHTML='';
+        else if(st.has_pending_bot) bStatus.innerHTML='<span class="badge thinking">Playing…</span>';
+        else if(!st.human_is_current) bStatus.innerHTML='<span class="badge thinking">Thinking…</span>';
+        else bStatus.innerHTML='';
+    }
 
     // Deck badge
     var dCount=document.querySelector('.deck-count');
@@ -1045,39 +1435,109 @@ function applyState(st, snap){
 
     // Hint bar
     var hint=document.getElementById('selection-hint');
-    if(hint) hint.textContent=st.has_pending_bot?'Bot is playing…':
-                              (!st.human_is_current?'Bot is thinking…':'Tap a card from your hand to play');
+    if(hint){
+        if(st.awaiting_cut_choice){
+            hint.textContent=st.is_opening_cutter?'Choose: keep the cut card or put it on the table.':'Waiting for your opponent to finish the cut.';
+        } else {
+            if(oppOpensFirstDeal) hint.textContent='Dealing cards…';
+            else hint.textContent=st.has_pending_bot?'Bot is playing…':
+                (!st.human_is_current?'Bot is thinking…':'Tap a card from your hand to play');
+        }
+    }
     var playForm=document.getElementById('play-form');
-    if(playForm) playForm.style.display=human?'':'none';
+    if(playForm) playForm.style.display=(human && !st.awaiting_cut_choice)?'':'none';
 
-    // Table cards: rebuild, scatter, FLIP
-    var tc=document.getElementById('table-cards');
-    if(tc){
-        tc.innerHTML=buildTable(st.table_slots,human,st.last_played_card,st.last_played_by);
-        tc.querySelectorAll('.table-card:not(.table-slot-empty)').forEach(enhance);
-        scatterAndFlip(tc, snap);
-    }
-
-    // Hand cards
-    var hc=document.getElementById('hand-cards');
-    if(hc){
-        hc.innerHTML=buildHand(st.human_hand, human);
-        hc.querySelectorAll('.card').forEach(enhance);
-    }
-
-    // Bot hand
-    var bc=document.getElementById('bot-cards');
-    if(bc){
-        bc.innerHTML=buildBotHand(st.bot_hand_count, st.has_pending_bot, st.pending_bot_played_card);
-        if(st.has_pending_bot&&st.pending_bot_played_card){
-            var bcc=bc.querySelector('.bot-capture-card'); if(bcc) enhance(bcc);
+    // Table + hands (skip rebuild here when opponent opens first — delayed deal block fills the DOM)
+    if(!oppOpensFirstDeal && !openingOppPaintHold){
+        if(tc){
+            tc.innerHTML=buildTable(st.table_slots,human,st.last_played_card,st.last_played_by);
+            tc.querySelectorAll('.table-card:not(.table-slot-empty)').forEach(enhance);
+            scatterAndFlip(tc, snap);
+        }
+        if(hc){
+            hc.innerHTML=buildHand(st.human_hand, human);
+            hc.querySelectorAll('.hand-card').forEach(enhance);
+        }
+        if(bc){
+            bc.innerHTML=buildBotHand(st.bot_hand_count, st.has_pending_bot, st.pending_bot_played_card);
+            if(st.has_pending_bot&&st.pending_bot_played_card){
+                var bcc=bc.querySelector('.bot-capture-card'); if(bcc) enhance(bcc);
+            }
         }
     }
 
-    // Detect fresh deal and animate cards flying from deck
-    var isDeal = _prevHumanHandLen===0 && _prevBotHandCount===0 &&
-                 st.human_hand && st.human_hand.length>0 && st.bot_hand_count>0;
-    if(isDeal) animateDeal(st);
+    // Fresh deal: empty hands → refilled; optional sequenced animation after opening cut
+    var skipAttachForOpening = !!(isDeal && openingSeq);
+    if(isDeal){
+        if(openingSeq){
+            var cutRef = _lastSeenCutCard;
+            _lastSeenCutCard = null;
+            animateOpeningDealSequenced(st, openingSeq, cutRef, function(){
+                centerTableCols();
+                if(!st.has_pending_bot){
+                    var humDone = !!(st.human_is_current && !st.round_over && !st.has_pending_bot);
+                    if(humDone) attachListeners(st.capture_map);
+                }
+            });
+        } else if(oppOpensFirstDeal){
+            function restoreOppOpeningHud(){
+                document.documentElement.classList.remove('chk-opp-first-boot');
+                var bcEl = document.getElementById('bot-cards');
+                if(bcEl){
+                    bcEl.innerHTML = buildBotHand(st.bot_hand_count, st.has_pending_bot, st.pending_bot_played_card);
+                    if(st.has_pending_bot && st.pending_bot_played_card){
+                        var bcc2 = bcEl.querySelector('.bot-capture-card');
+                        if(bcc2) enhance(bcc2);
+                    }
+                }
+                var hintEl = document.getElementById('selection-hint');
+                if(hintEl && !st.awaiting_cut_choice){
+                    if(st.has_pending_bot) hintEl.textContent = 'Bot is playing…';
+                    else hintEl.textContent = !st.human_is_current ? 'Bot is thinking…' : 'Tap a card from your hand to play';
+                }
+                var bStEl = document.querySelector('.opp-zone .zone-status');
+                if(bStEl && !st.awaiting_cut_choice){
+                    if(st.has_pending_bot) bStEl.innerHTML = '<span class="badge thinking">Playing…</span>';
+                    else if(!st.human_is_current) bStEl.innerHTML = '<span class="badge thinking">Thinking…</span>';
+                    else bStEl.innerHTML = '';
+                }
+                setTimeout(function(){
+                    if(st.has_pending_bot && !(window.Game && window.Game.socket && window.Game.socket.connected))
+                        scheduleBotTurn(st);
+                }, 500);
+            }
+            var humanRef = human;
+            setTimeout(function(){
+                var tcEl = document.getElementById('table-cards');
+                var hcEl = document.getElementById('hand-cards');
+                var bcEl = document.getElementById('bot-cards');
+                if(tcEl){
+                    tcEl.innerHTML = buildTable(st.table_slots, humanRef, st.last_played_card, st.last_played_by);
+                    tcEl.querySelectorAll('.table-card:not(.table-slot-empty)').forEach(enhance);
+                    tcEl.querySelectorAll('.table-card:not(.table-slot-empty)').forEach(function(c){ c.style.visibility = 'hidden'; });
+                    scatterAndFlip(tcEl, null);
+                }
+                if(hcEl){
+                    hcEl.innerHTML = buildHand(st.human_hand, humanRef);
+                    hcEl.querySelectorAll('.hand-card').forEach(enhance);
+                    hcEl.querySelectorAll('.hand-card').forEach(function(c){ c.style.visibility = 'hidden'; });
+                }
+                if(bcEl){
+                    bcEl.innerHTML = buildBotHand(st.bot_hand_count, false, null);
+                    bcEl.querySelectorAll('.card').forEach(function(c){ c.style.visibility = 'hidden'; });
+                }
+                requestAnimationFrame(function(){
+                    requestAnimationFrame(function(){
+                        animateOppFirstFullDeal(st, restoreOppOpeningHud);
+                    });
+                });
+                scheduleTableColumnAdjustAfterDeal(st);
+            }, dealMs(220));
+        } else {
+            animateDeal(st, null);
+            scheduleTableColumnAdjustAfterDeal(st);
+        }
+    }
 
     // Mid-round draw animation: card flies from deck when deck_remaining drops
     if(!isDeal && _prevDeckRemaining > (st.deck_remaining || 0)) {
@@ -1103,22 +1563,27 @@ function applyState(st, snap){
     _prevBotHandCount = st.bot_hand_count || 0;
     _prevDeckRemaining = st.deck_remaining || 0;
     _prevHumanHand = st.human_hand ? st.human_hand.slice() : [];
+    _prevAwaitingCutChoice = !!st.awaiting_cut_choice;
 
     // Commentary toast
     if(st.commentary_toast && window.showCommentaryToast) window.showCommentaryToast(st.commentary_toast);
 
+    updateCutOverlay(st);
+
     // Next step: bot turn or attach human listeners
+    var skipEarlyBotSchedule = !!(isDeal && oppOpensFirstDeal && !openingSeq);
     if(st.has_pending_bot){
-        if(st.pending_bot_is_capture){
+        if(st.pending_bot_is_capture && !openingOppPaintHold){
             animateBotCapture(st);
         }
         // AJAX fallback: also kick off the timer that will POST /api/bot_move
-        if(!(window.Game && window.Game.socket && window.Game.socket.connected))
+        if(!(window.Game && window.Game.socket && window.Game.socket.connected) && !skipEarlyBotSchedule)
             scheduleBotTurn(st);
     } else {
         // Bot move committed — clear any pending capture timer
-        if(_botCaptureTimer){ clearTimeout(_botCaptureTimer); _botCaptureTimer = null; }
-        if(human) attachListeners(st.capture_map);
+        if(_botCaptureTimer && _botCaptureTimer !== -1){ clearTimeout(_botCaptureTimer); _botCaptureTimer = null; }
+        else if(_botCaptureTimer === -1){ _botCaptureTimer = null; }
+        if(human && !st.awaiting_cut_choice && !skipAttachForOpening) attachListeners(st.capture_map);
     }
     _state = st;
 }
@@ -1233,14 +1698,17 @@ function playCard(handIdx, tableIdxs, fromEl, capEls, isCapture, isChkobba){
 // triggered by animateBotCapture() inside applyState.
 function scheduleBotTurn(st){
     var done=false;
+    var capFlyN = Math.max(1, (st.pending_bot_captured_indices || []).length + 1);
+    var capFlyMs = st.pending_bot_is_capture ? pileFlyDurationMs(600, capFlyN) : 0;
+    var capWait = (st.pending_bot_is_capture ? OPP_CAPTURE_REVEAL_MS + capFlyMs + 120 : 0);
     var safety=setTimeout(function(){ if(!done){done=true;doBotFetch(null);} },
-                          st.pending_bot_is_chkobba?2800:1800);
+                          (st.pending_bot_is_chkobba ? 2800 : 1800) + (st.pending_bot_is_capture ? OPP_CAPTURE_REVEAL_MS + capFlyMs : 0));
 
-    // Capture: animation already started; just wait then fetch
+    // Capture: wait for reveal delay + sweep animation, then commit bot move
     if(st.pending_bot_is_capture){
         setTimeout(function(){
             if(!done){done=true;clearTimeout(safety);doBotFetch(null);}
-        }, 800);
+        }, capWait);
         return;
     }
 
@@ -1366,51 +1834,113 @@ function attachListeners(captureMap){
     var ps=null;
     try{ var el=document.getElementById('page-state'); if(el) ps=JSON.parse(el.textContent); }catch(e){}
     if(!ps||ps.round_over||ps.match_over) return;
-    // Reveal hand zones (hidden to prevent server-render flash)
+
+    var openDeal = ps.human_hand && ps.human_hand.length > 0 && (ps.bot_hand_count || 0) > 0;
+    var oppOpensFirstInit = (ps.opp_first_js_deal === true)
+        ? !!openDeal
+        : !!(openDeal && !ps.awaiting_cut_choice && ps.has_pending_bot && !ps.human_is_current &&
+            (ps.game_mode === 'solo' || !ps.game_mode));
+
+    if(oppOpensFirstInit){
+        var tcE0 = document.getElementById('table-cards'), hcE0 = document.getElementById('hand-cards'), bcE0 = document.getElementById('bot-cards');
+        if(tcE0) tcE0.innerHTML = '<p class="felt-empty">No cards on table</p>';
+        if(hcE0) hcE0.innerHTML = '<span class="zone-empty">No cards</span>';
+        if(bcE0) bcE0.innerHTML = '<span class="zone-empty">No cards</span>';
+        document.documentElement.classList.remove('chk-opp-first-boot');
+        var hint0 = document.getElementById('selection-hint');
+        if(hint0) hint0.textContent = 'Dealing cards…';
+        var bSt0 = document.querySelector('.opp-zone .zone-status');
+        if(bSt0) bSt0.innerHTML = '';
+    }
+
     document.querySelectorAll('.zone-cards.init-hidden').forEach(function(el){ el.classList.remove('init-hidden'); });
+
+    if(!oppOpensFirstInit){
+        document.documentElement.classList.remove('chk-opp-first-boot');
+        (function(){
+            var _tc=document.getElementById('table-cards');
+            if(_tc){
+                _tc.querySelectorAll('.table-card:not(.table-slot-empty)').forEach(enhance);
+                scatterAndFlip(_tc, null);
+            }
+        })();
+        (function(){
+            var _hc=document.getElementById('hand-cards'), _bc=document.getElementById('bot-cards');
+            if(_hc) _hc.querySelectorAll('.hand-card').forEach(enhance);
+            if(_bc) _bc.querySelectorAll('.card').forEach(enhance);
+        })();
+    }
 
     _state = ps;
     _prevHumanHandLen = ps.human_hand ? ps.human_hand.length : 0;
     _prevBotHandCount = ps.bot_hand_count || 0;
     _prevDeckRemaining = ps.deck_remaining || 0;
     _prevHumanHand = ps.human_hand ? ps.human_hand.slice() : [];
+    _prevAwaitingCutChoice = !!ps.awaiting_cut_choice;
+    if(ps.awaiting_cut_choice && ps.is_opening_cutter && ps.cut_card) _lastSeenCutCard = ps.cut_card;
     var hasSocket = ps.room_id && ps.room_id !== '__no_room__';
-    var doDeal = _prevHumanHandLen>0 && _prevBotHandCount>0;
 
-    if(doDeal){
-        // Show truly empty hands first
-        var hc=document.getElementById('hand-cards');
-        var bc=document.getElementById('bot-cards');
-        if(hc) hc.innerHTML='';
-        if(bc) bc.innerHTML='';
-
-        // After 500ms rebuild hands and animate deal
+    if(openDeal){
         setTimeout(function(){
-            if(hc){
-                var sel=ps.human_is_current && !ps.has_pending_bot && !ps.round_over;
-                hc.innerHTML=buildHand(ps.human_hand, sel);
-                hc.querySelectorAll('.card').forEach(enhance);
-            }
-            if(bc){
-                bc.innerHTML=buildBotHand(ps.bot_hand_count, ps.has_pending_bot, ps.pending_bot_played_card);
-                if(ps.has_pending_bot && ps.pending_bot_played_card){
-                    var bcc=bc.querySelector('.bot-capture-card');
-                    if(bcc) enhance(bcc);
+            function afterInitDeal(){
+                if(!oppOpensFirstInit) return;
+                var bc1 = document.getElementById('bot-cards');
+                if(bc1){
+                    bc1.innerHTML = buildBotHand(ps.bot_hand_count, ps.has_pending_bot, ps.pending_bot_played_card);
+                    if(ps.has_pending_bot && ps.pending_bot_played_card){
+                        var bcc1 = bc1.querySelector('.bot-capture-card');
+                        if(bcc1) enhance(bcc1);
+                    }
                 }
+                var hint1 = document.getElementById('selection-hint');
+                if(hint1 && !ps.awaiting_cut_choice){
+                    if(ps.has_pending_bot) hint1.textContent = 'Bot is playing…';
+                    else hint1.textContent = !ps.human_is_current ? 'Bot is thinking…' : 'Tap a card from your hand to play';
+                }
+                var bSt1 = document.querySelector('.opp-zone .zone-status');
+                if(bSt1 && !ps.awaiting_cut_choice){
+                    if(ps.has_pending_bot) bSt1.innerHTML = '<span class="badge thinking">Playing…</span>';
+                    else if(!ps.human_is_current) bSt1.innerHTML = '<span class="badge thinking">Thinking…</span>';
+                    else bSt1.innerHTML = '';
+                }
+                setTimeout(function(){
+                    if(ps.has_pending_bot && !hasSocket) scheduleBotTurn(ps);
+                }, 500);
             }
-            animateDeal(ps);
-
-            // Center columns if >3 after deal animation completes
-            var _maxCrd = Math.max(ps.human_hand.length, ps.bot_hand_count || 0);
-            setTimeout(centerTableCols, _maxCrd * 250 + 600);
-
-            if(!ps.has_pending_bot && ps.human_is_current) attachListeners(ps.capture_map);
-            else if(!hasSocket && ps.has_pending_bot) scheduleBotTurn(ps);
-        }, 500);
-    } else {
-        if(!ps.has_pending_bot && ps.human_is_current) attachListeners(ps.capture_map);
-        else if(!hasSocket && ps.has_pending_bot) scheduleBotTurn(ps);
+            if(oppOpensFirstInit){
+                var humanP = !!(ps.human_is_current && !ps.round_over && !ps.has_pending_bot);
+                var tcE = document.getElementById('table-cards'), hcE = document.getElementById('hand-cards'), bcE = document.getElementById('bot-cards');
+                if(tcE){
+                    tcE.innerHTML = buildTable(ps.table_slots, humanP, ps.last_played_card, ps.last_played_by);
+                    tcE.querySelectorAll('.table-card:not(.table-slot-empty)').forEach(enhance);
+                    tcE.querySelectorAll('.table-card:not(.table-slot-empty)').forEach(function(c){ c.style.visibility = 'hidden'; });
+                    scatterAndFlip(tcE, null);
+                }
+                if(hcE){
+                    hcE.innerHTML = buildHand(ps.human_hand, humanP);
+                    hcE.querySelectorAll('.hand-card').forEach(enhance);
+                    hcE.querySelectorAll('.hand-card').forEach(function(c){ c.style.visibility = 'hidden'; });
+                }
+                if(bcE){
+                    bcE.innerHTML = buildBotHand(ps.bot_hand_count, false, null);
+                    bcE.querySelectorAll('.card').forEach(function(c){ c.style.visibility = 'hidden'; });
+                }
+                requestAnimationFrame(function(){
+                    requestAnimationFrame(function(){
+                        animateOppFirstFullDeal(ps, afterInitDeal);
+                    });
+                });
+            } else {
+                animateDeal(ps, null);
+            }
+            scheduleTableColumnAdjustAfterDeal(ps);
+        }, dealMs(oppOpensFirstInit ? 220 : 190));
     }
+
+    bindCutChoiceButtons();
+    updateCutOverlay(ps);
+    if(!ps.awaiting_cut_choice && !ps.has_pending_bot && ps.human_is_current) attachListeners(ps.capture_map);
+    else if(!hasSocket && ps.has_pending_bot && !oppOpensFirstInit) scheduleBotTurn(ps);
 })();
 
 // ── Expose engine API for socket-client.js ───────────────────────────────
@@ -1453,7 +1983,8 @@ document.addEventListener('DOMContentLoaded', function(){
             window.showCommentaryToast('Mabrouk! \uD83C\uDF89');
     });
 
-    window.Game.on('round_over',  function(){ window.location.reload(); });
+    // round_over: rely on state_snapshot + applyState (1s pause, sweep, reload)
+    window.Game.on('round_over',  function(){ /* no-op — avoid racing reload */ });
     window.Game.on('match_over',  function(){ window.location.reload(); });
 });
 </script>
@@ -1623,21 +2154,6 @@ document.addEventListener('DOMContentLoaded', function(){
         }).then(function(r){ return r.json(); });
     }
 
-    // ── Play vs Bot (Phase 8) ──────────────────────────────────────────────
-    var botBtn = document.getElementById('landing-bot-btn');
-    if(botBtn){
-        botBtn.addEventListener('click', function(){
-            botBtn.disabled = true;
-            botBtn.textContent = 'Starting\u2026';
-            doPost('/api/rooms/create-bot', {target_score: 11})
-            .then(function(d){
-                if(d.room_id) window.location.href = '/play/' + d.room_id;
-                else{ botBtn.disabled=false; botBtn.textContent='\uD83E\uDD16 Play vs Bot'; alert(d.error||'Error'); }
-            })
-            .catch(function(){ botBtn.disabled=false; botBtn.textContent='\uD83E\uDD16 Play vs Bot'; });
-        });
-    }
-
     // ── Quick Match ────────────────────────────────────────────────────────
     var qmBtn = document.getElementById('landing-quickmatch-btn');
     if(qmBtn){
@@ -1756,7 +2272,7 @@ document.addEventListener('DOMContentLoaded', function(){
         .then(function(res){
             if(!res.ok){ showError(res.data.error || 'Failed to save.'); return; }
             // Update every name display on the page
-            document.querySelectorAll('.hs-name-text').forEach(function(el){ el.textContent = name; });
+            document.querySelectorAll('.hs-name-text').forEach(function(el){ el.textContent = name; el.title = name; });
             document.querySelectorAll('#zone-display-name').forEach(function(el){ el.textContent = name; });
             document.querySelectorAll('.landing-player-name').forEach(function(el){ el.textContent = name; });
             close();
