@@ -1379,19 +1379,21 @@ function applyState(st,snap,prevStateOverride){
     var playForm=document.getElementById('play-form');
     if(playForm) playForm.style.display=(human && !st.awaiting_cut_choice)?'':'none';
 
-    if(!_isDealing && !oppOpensFirstDeal && !openingOppPaintHold){
+    if(!oppOpensFirstDeal && !openingOppPaintHold){
         if(tc){
             tc.innerHTML=buildTable(st.table_slots,human,st.last_played_card,st.last_played_by);
             tc.querySelectorAll('.table-card:not(.table-slot-empty)').forEach(enhance);
             scatterAndFlip(tc,snap);
         }
-        if(hc){
-            hc.innerHTML=buildHand(st.human_hand,human);
-            hc.querySelectorAll('.hand-card').forEach(enhance);
-        }
-        if(bc){
-            bc.innerHTML=buildBotHand(st.bot_hand_count,st.has_pending_bot,st.pending_bot_played_card);
-            var bcc=bc.querySelector('.bot-capture-card'); if(bcc) enhance(bcc);
+        if(!_isDealing){
+            if(hc){
+                hc.innerHTML=buildHand(st.human_hand,human);
+                hc.querySelectorAll('.hand-card').forEach(enhance);
+            }
+            if(bc){
+                bc.innerHTML=buildBotHand(st.bot_hand_count,st.has_pending_bot,st.pending_bot_played_card);
+                var bcc=bc.querySelector('.bot-capture-card'); if(bcc) enhance(bcc);
+            }
         }
     }
 
@@ -1715,6 +1717,15 @@ function attachListeners(captureMap){
 
     if(openDeal){
         _isDealing=true;
+        var _pendingCardStr=null;
+        var _pcc=document.querySelector('#bot-cards .bot-capture-card');
+        if(_pcc){
+            _pendingCardStr=_pcc.textContent.trim();
+            var _tempBack=document.createElement('div');
+            _tempBack.className='card card-back';
+            _tempBack.dataset.pendingCard=_pendingCardStr;
+            _pcc.parentNode.replaceChild(_tempBack, _pcc);
+        }
         setTimeout(function(){
             function afterInitDealPlay(){
                 if(!oppOpensFirstInit) return;
@@ -1760,11 +1771,20 @@ function attachListeners(captureMap){
                     });
                 });
             } else {
-                animateDeal(ps, null);
+                animateDeal(ps, function(){
+                    setTimeout(function(){
+                        var _tb=document.querySelector('#bot-cards .card-back[data-pending-card]');
+                        if(_tb && _pendingCardStr){
+                            _tb.classList.remove('card-back');
+                            _tb.textContent=_pendingCardStr;
+                            if(isRed(_pendingCardStr)) _tb.classList.add('red-suit');
+                            enhance(_tb);
+                        }
+                        _isDealing=false;
+                    }, 600);
+                });
             }
             scheduleTableColumnAdjustAfterDeal(ps);
-            var dur=Math.max((ps.human_hand||[]).length,ps.bot_hand_count||0)*250+600;
-            setTimeout(function(){ _isDealing=false; }, dur);
         }, dealMs(oppOpensFirstInit ? 220 : 190));
     }
 

@@ -1446,21 +1446,24 @@ function applyState(st, snap, prevState){
     var playForm=document.getElementById('play-form');
     if(playForm) playForm.style.display=(human && !st.awaiting_cut_choice)?'':'none';
 
-    // Table + hands (skip during deal animation to avoid flicker)
-    if(!_isDealing && !oppOpensFirstDeal && !openingOppPaintHold){
+    // Table cards: always render (needed for capture animation / scatter)
+    // Hand/bot cards: skip during deal animation to avoid flicker
+    if(!oppOpensFirstDeal && !openingOppPaintHold){
         if(tc){
             tc.innerHTML=buildTable(st.table_slots,human,st.last_played_card,st.last_played_by);
             tc.querySelectorAll('.table-card:not(.table-slot-empty)').forEach(enhance);
             scatterAndFlip(tc, snap);
         }
-        if(hc){
-            hc.innerHTML=buildHand(st.human_hand, human);
-            hc.querySelectorAll('.hand-card').forEach(enhance);
-        }
-        if(bc){
-            bc.innerHTML=buildBotHand(st.bot_hand_count, st.has_pending_bot, st.pending_bot_played_card);
-            if(st.has_pending_bot&&st.pending_bot_played_card){
-                var bcc=bc.querySelector('.bot-capture-card'); if(bcc) enhance(bcc);
+        if(!_isDealing){
+            if(hc){
+                hc.innerHTML=buildHand(st.human_hand, human);
+                hc.querySelectorAll('.hand-card').forEach(enhance);
+            }
+            if(bc){
+                bc.innerHTML=buildBotHand(st.bot_hand_count, st.has_pending_bot, st.pending_bot_played_card);
+                if(st.has_pending_bot&&st.pending_bot_played_card){
+                    var bcc=bc.querySelector('.bot-capture-card'); if(bcc) enhance(bcc);
+                }
             }
         }
     }
@@ -1883,6 +1886,16 @@ function attachListeners(captureMap){
 
     if(openDeal){
         _isDealing = true;
+        // Replace bot's pending capture card with a card-back during deal; reveal after thinking delay
+        var _pendingCardStr = null;
+        var _pcc = document.querySelector('#bot-cards .bot-capture-card');
+        if(_pcc){
+            _pendingCardStr = _pcc.textContent.trim();
+            var _tempBack = document.createElement('div');
+            _tempBack.className = 'card card-back';
+            _tempBack.dataset.pendingCard = _pendingCardStr;
+            _pcc.parentNode.replaceChild(_tempBack, _pcc);
+        }
         setTimeout(function(){
             function afterInitDeal(){
                 if(!oppOpensFirstInit) return;
@@ -1933,19 +1946,32 @@ function attachListeners(captureMap){
                     });
                 });
             } else {
-                animateDeal(ps, null);
+                animateDeal(ps, function(){
+                    // Bot thinking delay, then reveal pending card
+                    setTimeout(function(){
+                        var _tb = document.querySelector('#bot-cards .card-back[data-pending-card]');
+                        if(_tb && _pendingCardStr){
+                            _tb.classList.remove('card-back');
+                            _tb.textContent = _pendingCardStr;
+                            if(isRed(_pendingCardStr)) _tb.classList.add('red-suit');
+                            enhance(_tb);
+                        }
+                        _isDealing = false;
+                        // Notify listeners for bot turn
+                        if(ps.has_pending_bot && !(window.Game && window.Game.socket && window.Game.socket.connected)){
+                            scheduleBotTurn(ps);
+                        }
+                    }, 600);
+                });
             }
             scheduleTableColumnAdjustAfterDeal(ps);
-            // Allow applyState to render hands again after deal animation completes
-            var dealDur = Math.max((ps.human_hand||[]).length, ps.bot_hand_count||0) * 250 + 600;
-            setTimeout(function(){ _isDealing = false; }, dealDur);
         }, dealMs(oppOpensFirstInit ? 220 : 190));
     }
 
     bindCutChoiceButtons();
     updateCutOverlay(ps);
     if(!ps.awaiting_cut_choice && !ps.has_pending_bot && ps.human_is_current) attachListeners(ps.capture_map);
-    else if(!hasSocket && ps.has_pending_bot && !oppOpensFirstInit) scheduleBotTurn(ps);
+    else if(!hasSocket && ps.has_pending_bot && !oppOpensFirstInit && !openDeal) scheduleBotTurn(ps);
 })();
 
 // ── Expose engine API for socket-client.js ───────────────────────────────
