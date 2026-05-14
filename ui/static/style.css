@@ -387,48 +387,6 @@ button { border: none; outline: none; }
     position: relative;
 }
 
-.cafe-ambient {
-    position: absolute;
-    inset: 0;
-    pointer-events: none;
-    z-index: 6;
-}
-.cafe-prop {
-    position: absolute;
-    opacity: 0.42;
-    filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.35));
-}
-.cafe-prop svg {
-    width: 100%;
-    height: auto;
-    display: block;
-}
-.cafe-prop--tea {
-    width: min(88px, 22vw);
-    top: 6%;
-    left: 1%;
-    transform: rotate(-6deg);
-}
-.cafe-prop--jasmine {
-    width: min(100px, 24vw);
-    top: 10%;
-    right: 0;
-    transform: rotate(8deg);
-}
-.cafe-prop--cigarettes {
-    width: min(72px, 20vw);
-    bottom: 14%;
-    right: 2%;
-    transform: rotate(-4deg);
-    opacity: 0.36;
-}
-
-@media (max-width: 520px) {
-    .cafe-prop { opacity: 0.28; }
-    .cafe-prop--tea { width: min(64px, 20vw); top: 4%; }
-    .cafe-prop--jasmine { width: min(72px, 22vw); }
-    .cafe-prop--cigarettes { width: min(56px, 18vw); bottom: 10%; }
-}
 
 body.session-game .felt.chkobba-flash {
     box-shadow:
@@ -445,7 +403,7 @@ body.session-game .felt.chkobba-flash {
     border: 1px solid rgba(255,255,255,.08);
     flex-shrink: 0;
     contain: layout style;
-    min-height: 140px;
+    height: 150px;
     overflow: hidden;
 }
 .opp-zone    { border-color: rgba(232,136,58,.15); }
@@ -738,13 +696,22 @@ html.chk-opp-first-boot #bot-cards {
     pointer-events: auto;
 }
 
-/* Each column holds one bot/human pair vertically */
+/* Each column holds one bot/human pair vertically — always rendered, even when empty */
 .table-col {
     display: flex;
     flex-direction: column;
     align-items: center;
     gap: 14px;
     flex-shrink: 0;
+    min-width: 76px;
+}
+/* Invisible placeholder that keeps column width when a card is captured */
+.card-spacer {
+    width: 76px;
+    height: 108px;
+    flex-shrink: 0;
+    visibility: hidden;
+    pointer-events: none;
 }
 
 .felt-empty {
@@ -1487,6 +1454,8 @@ html.chk-opp-first-boot #bot-cards {
     .c-tl, .c-br { font-size: .75rem; }
     .c-ctr { font-size: 2.2rem; }
     .card-back { width: 46px; height: 66px; }
+    .card-spacer { width: 64px; height: 92px; }
+    .table-col { min-width: 64px; }
 
     .felt { border-radius: 22px; }
     .felt::after { border-radius: 18px; }
@@ -1513,6 +1482,8 @@ html.chk-opp-first-boot #bot-cards {
     .c-tl, .c-br { font-size: .68rem; }
     .c-ctr { font-size: 1.9rem; }
     .card-back { width: 40px; height: 58px; }
+    .card-spacer { width: 56px; height: 80px; }
+    .table-col { min-width: 56px; }
     .felt-cards { gap: 8px; }
 }
 

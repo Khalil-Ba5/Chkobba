@@ -302,8 +302,6 @@
 
 </div><!-- /board -->
 
-{% include 'partials/cafe_ambient.html' %}
-
 <!-- ── Move Log ── -->
 {% if last_human_move or last_bot_move %}
 <div class="move-log">
@@ -584,6 +582,7 @@ var _prevHumanHandLen = 0;
 var _prevBotHandCount = 0;
 var _prevDeckRemaining = 0;
 var _prevHumanHand = [];
+var _isDealing = false; // prevents applyState from interfering with deal animation
 var _prevAwaitingCutChoice = false;
 var _lastSeenCutCard = null;
 
@@ -787,6 +786,7 @@ function animateDeal(st, onDone){
 
             var botCards = Array.from(document.querySelectorAll('#bot-cards .card:not(.bot-capture-card)'));
             var humanCards = Array.from(document.querySelectorAll('#hand-cards .card'));
+            var botPendingCard = document.querySelector('#bot-cards .bot-capture-card');
 
             var seq = [];
             var maxLen = Math.max(botCards.length, humanCards.length);
@@ -794,6 +794,8 @@ function animateDeal(st, onDone){
                 if(botCards[i]) seq.push({el: botCards[i], isBot: true});
                 if(humanCards[i]) seq.push({el: humanCards[i], isBot: false});
             }
+            // Hide pending bot card during deal; reveal it after all hand cards fly in
+            if(botPendingCard) botPendingCard.style.visibility = 'hidden';
             if(!seq.length){ if(onDone) onDone(); return; }
 
             seq.forEach(function(item){ item.el.style.visibility = 'hidden'; });
@@ -833,7 +835,10 @@ function animateDeal(st, onDone){
                 }, idx * dealMs(250));
             });
             var lastEnd = seq.length ? (seq.length - 1) * dealMs(250) + dealMs(500) + 80 : 0;
-            if(onDone) setTimeout(onDone, lastEnd);
+            setTimeout(function(){
+                if(botPendingCard) botPendingCard.style.visibility = '';
+                if(onDone) onDone();
+            }, lastEnd);
         });
     });
 }
@@ -1054,7 +1059,13 @@ function buildHand(cards, sel){
     }).join('');
 }
 
-// Build table HTML: each column is two stacked slots (top then bottom); cards fill in slot order
+// Stable order: first pair center (0), then alternate left↔right (-1,+1,-2,+2,…)
+function _pairOrder(i){
+    if(i===0) return 0;
+    return (i%2===1?-1:1)*Math.ceil(i/2);
+}
+
+// Build table HTML: each pair is a column with stable CSS order; empty→spacer
 function buildTable(slots, sel, lastCard, lastBy){
     if(!slots) return '<p class="felt-empty">No cards on the table</p>';
     var hasSome = slots.some(function(s){return s.card;});
@@ -1065,15 +1076,15 @@ function buildTable(slots, sel, lastCard, lastBy){
         var human=slots[i+1];
         var hasBot=bot&&bot.card;
         var hasHuman=human&&human.card;
-        if(!hasBot && !hasHuman) continue;
-        html+='<div class="table-col">';
+        var order=_pairOrder(Math.floor(i/2));
+        html+='<div class="table-col" style="order:'+order+'">';
         if(hasBot){
             var fly=(bot.card===lastCard && lastBy==='bot')?' fly-from-bot':'';
             var ti=(bot.table_index!=null)?bot.table_index:'';
             html+='<div class="card table-card'+(isRed(bot.card)?' red-suit':'')+(sel?' selectable':'')+fly+
                   '" data-table-index="'+ti+'" data-card-str="'+bot.card+'">'+bot.card+'</div>';
         } else {
-            html+='<div class="card table-slot-empty" aria-hidden="true"></div>';
+            html+='<div class="card-spacer"></div>';
         }
         if(hasHuman){
             var fly=(human.card===lastCard && lastBy==='human')?' fly-from-human':'';
@@ -1081,7 +1092,7 @@ function buildTable(slots, sel, lastCard, lastBy){
             html+='<div class="card table-card'+(isRed(human.card)?' red-suit':'')+(sel?' selectable':'')+fly+
                   '" data-table-index="'+ti+'" data-card-str="'+human.card+'">'+human.card+'</div>';
         } else {
-            html+='<div class="card table-slot-empty" aria-hidden="true"></div>';
+            html+='<div class="card-spacer"></div>';
         }
         html+='</div>';
     }
@@ -1140,24 +1151,8 @@ function _hashStr(s){
 }
 
 // ── Reorder columns center-out when > 3 (only after a full re-deal — see schedule…) ───────
-function centerTableCols(){
-    var cols=document.querySelectorAll('#table-cards .table-col');
-    if(cols.length<=3) return;
-    cols.forEach(function(col, i){
-        if(i===0) col.style.order=0;
-        else{
-            var side=(i%2===1)?-1:1;
-            col.style.order=side*Math.ceil(i/2);
-        }
-    });
-}
-
-// After both players empty their 3-card hands and new hands are dealt: apply column order only then
-// (avoids mid-trick jumps). Row stays centered via CSS .felt-cards { justify-content: center }.
-function scheduleTableColumnAdjustAfterDeal(st){
-    var maxC=Math.max(st.human_hand?st.human_hand.length:0,st.bot_hand_count||0);
-    setTimeout(centerTableCols, dealMs(maxC*250+600));
-}
+// No-op stub (centering removed for stability)
+function scheduleTableColumnAdjustAfterDeal(st){}
 
 // ── Scatter + FLIP on the table container ─────────────────────────────────
 function scatterAndFlip(container, snap){
@@ -1451,8 +1446,8 @@ function applyState(st, snap, prevState){
     var playForm=document.getElementById('play-form');
     if(playForm) playForm.style.display=(human && !st.awaiting_cut_choice)?'':'none';
 
-    // Table + hands (skip rebuild here when opponent opens first — delayed deal block fills the DOM)
-    if(!oppOpensFirstDeal && !openingOppPaintHold){
+    // Table + hands (skip during deal animation to avoid flicker)
+    if(!_isDealing && !oppOpensFirstDeal && !openingOppPaintHold){
         if(tc){
             tc.innerHTML=buildTable(st.table_slots,human,st.last_played_card,st.last_played_by);
             tc.querySelectorAll('.table-card:not(.table-slot-empty)').forEach(enhance);
@@ -1477,7 +1472,6 @@ function applyState(st, snap, prevState){
             var cutRef = _lastSeenCutCard;
             _lastSeenCutCard = null;
             animateOpeningDealSequenced(st, openingSeq, cutRef, function(){
-                centerTableCols();
                 if(!st.has_pending_bot){
                     var humDone = !!(st.human_is_current && !st.round_over && !st.has_pending_bot);
                     if(humDone) attachListeners(st.capture_map);
@@ -1858,6 +1852,9 @@ function attachListeners(captureMap){
     }
 
     document.querySelectorAll('.zone-cards.init-hidden').forEach(function(el){ el.classList.remove('init-hidden'); });
+    // Hide bot's pending card immediately; animateDeal reveals it after animation
+    var _iniBpc = document.querySelector('#bot-cards .bot-capture-card');
+    if(_iniBpc) _iniBpc.style.visibility = 'hidden';
 
     if(!oppOpensFirstInit){
         document.documentElement.classList.remove('chk-opp-first-boot');
@@ -1885,6 +1882,7 @@ function attachListeners(captureMap){
     var hasSocket = ps.room_id && ps.room_id !== '__no_room__';
 
     if(openDeal){
+        _isDealing = true;
         setTimeout(function(){
             function afterInitDeal(){
                 if(!oppOpensFirstInit) return;
@@ -1938,6 +1936,9 @@ function attachListeners(captureMap){
                 animateDeal(ps, null);
             }
             scheduleTableColumnAdjustAfterDeal(ps);
+            // Allow applyState to render hands again after deal animation completes
+            var dealDur = Math.max((ps.human_hand||[]).length, ps.bot_hand_count||0) * 250 + 600;
+            setTimeout(function(){ _isDealing = false; }, dealDur);
         }, dealMs(oppOpensFirstInit ? 220 : 190));
     }
 
