@@ -1947,7 +1947,7 @@ def play_room(room_id: str):
     )
 
     # Strip keys that are passed explicitly to avoid duplicate keyword arguments.
-    for _k in ("my_seat", "room_id", "game_mode", "show_start_screen"):
+    for _k in ("my_seat", "room_id", "game_mode", "show_start_screen", "game_active"):
         game_ctx.pop(_k, None)
 
     return render_template(
