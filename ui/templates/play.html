@@ -389,7 +389,7 @@
         <p class="nb-match">Match running total: {{ match_scores[0] }} – {{ match_scores[1] }}</p>
         <div class="nb-continue">
             <!-- In multiplayer, next_round is triggered via SocketIO when server is ready -->
-            <button class="btn-stamp" onclick="window.location.reload()">Next Round →</button>
+            <button class="btn-stamp" onclick="var _rm=window.location.pathname.match(/\/play\/([^\/]+)/);window.location.href=_rm?'/play/'+_rm[1]+'?next_round=1':'/'">Next Round →</button>
         </div>
     </div>
 </div>
@@ -1223,6 +1223,11 @@ function bindCutChoiceButtonsPlay(){
 function applyState(st,snap,prevStateOverride){
     if(!st||st.show_start_screen){window.location.href='/';return;}
     if(st.match_over){window.location.reload();return;}
+    // Hide round-over prompt if next round started
+    if(!st.round_over){
+        var _rop=document.getElementById('round-over-prompt');
+        if(_rop) _rop.style.display='none';
+    }
     if(st.round_over){
         var tcRo=document.getElementById('table-cards');
         if(tcRo){
@@ -2180,7 +2185,9 @@ document.addEventListener('DOMContentLoaded', function(){
     var ropBtn = document.getElementById('rop-next-btn');
     if(ropBtn){
         ropBtn.addEventListener('click', function(){
-            window.location.reload();
+            var _roomId = window.location.pathname.match(/\/play\/([^\/]+)/);
+            if(_roomId) window.location.href = '/play/' + _roomId[1] + '?next_round=1';
+            else window.location.reload();
         });
     }
 });

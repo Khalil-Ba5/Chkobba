@@ -1933,6 +1933,9 @@ def play_room(room_id: str):
     if game_active:
         try:
             mgr = GameManager.load(room_id, app.game_store)
+            # ?next_round=1 auto-transitions from ROUND_OVER to next round
+            if request.args.get("next_round") == "1" and mgr.phase == GamePhase.ROUND_OVER:
+                mgr.next_round()
             game_ctx = mgr.view_data(viewer_seat=my_seat)
         except Exception:
             game_active = False
