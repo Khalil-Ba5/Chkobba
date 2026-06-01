@@ -44,6 +44,10 @@ def init_models() -> None:
             created_at  TEXT NOT NULL
         )
     """)
+    try:
+        cur.execute("ALTER TABLE guests ADD COLUMN avatar_key TEXT")
+    except Exception:
+        pass
 
     # ------------------------------------------------------------------
     # accounts — optional registered users.

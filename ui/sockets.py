@@ -272,6 +272,8 @@ def on_rematch_offer(data: dict):
             "is_bot":      p.get("is_bot", False),
             "connected":   False,
             "sid":         None,
+            "avatar_key":  p.get("avatar_key"),
+            "avatar_url":  p.get("avatar_url"),
         })
     new_players.sort(key=lambda p: p["seat"])
 

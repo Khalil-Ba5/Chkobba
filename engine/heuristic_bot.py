@@ -20,58 +20,50 @@ WEIGHTS = {
 }
 
 
-def get_remaining_cards(state: GameState) -> Set[Card]:
-    """Get all cards that haven't been played yet (not in hands, captured_cards, or table).
-    
-    Used for hidden-card sampling to avoid perfect information bias.
+def _all_cards() -> Set[Card]:
+    return {Card(suit, rank) for suit in Suit for rank in Rank}
+
+
+def get_hidden_card_pool(state: GameState, *, viewer: int | None = None) -> Set[Card]:
+    """Cards that may be in the deck or opponent's hand (hidden from *viewer*).
+
+    Visible to the acting player: own hand, table, and both capture piles.
+    Everything else — deck stock plus opponent's concealed hand — is unknown.
     """
-    all_cards = set()
-    for suit in Suit:
-        for rank in Rank:
-            all_cards.add(Card(suit, rank))
-    
-    # Remove cards we know about
-    for player in state.players:
-        all_cards -= set(player.hand)
-        all_cards -= set(player.captured_cards)
-    
-    all_cards -= set(state.table_cards)
-    all_cards -= set(state.deck)
-    
-    return all_cards
+    viewer = state.current_player if viewer is None else viewer
+    pool = _all_cards()
+    me = state.players[viewer]
+    opp = state.players[1 - viewer]
+    pool -= set(me.hand)
+    pool -= set(me.captured_cards)
+    pool -= set(opp.captured_cards)
+    pool -= set(state.table_cards)
+    return pool
+
+
+def get_remaining_cards(state: GameState) -> Set[Card]:
+    """Alias for :func:`get_hidden_card_pool` (kept for callers outside this module)."""
+    return get_hidden_card_pool(state)
 
 
 def sample_opponent_hand(state: GameState, num_samples: int = 100) -> List[Set[Card]]:
-    """Sample plausible opponent hands based on remaining unknown cards.
-    
-    Args:
-        state: Current game state
-        num_samples: Number of samples to generate
-        
-    Returns:
-        List of sampled possible opponent hands (as sets of cards)
+    """Sample plausible opponent hands from hidden cards only.
+
+    Does not use the opponent's actual hand — only the hand size and the pool
+    of cards the bot cannot account for on table or in visible piles.
     """
-    opponent_idx = 1 - state.current_player
-    opponent = state.players[opponent_idx]
-    known_opp_cards = set(opponent.hand)
-    unknown_count = len(opponent.hand)
-    
-    # If we can see all opponent cards (shouldn't happen but handle it)
-    if unknown_count == 0:
+    opponent = state.players[1 - state.current_player]
+    hand_size = len(opponent.hand)
+    if hand_size == 0:
         return [set() for _ in range(num_samples)]
-    
-    remaining_cards = get_remaining_cards(state)
-    remaining_cards_list = list(remaining_cards)
-    
-    samples = []
+
+    pool = list(get_hidden_card_pool(state))
+    samples: List[Set[Card]] = []
     for _ in range(num_samples):
-        # Sample unknown_count cards from remaining pool
-        if len(remaining_cards_list) >= unknown_count:
-            sampled = set(random.sample(remaining_cards_list, unknown_count))
+        if len(pool) >= hand_size:
+            samples.append(set(random.sample(pool, hand_size)))
         else:
-            sampled = set(remaining_cards_list)
-        samples.append(known_opp_cards | sampled)
-    
+            samples.append(set(pool))
     return samples
 
 

@@ -143,7 +143,8 @@
         'rematch_offered', 'rematch_offered_sent',
         'rematch_accepted', 'rematch_declined',
         // Matchmaking
-        'matchmaking_status'
+        'matchmaking_status',
+        'player_profile_updated',
       ];
       deltaEvents.forEach(function (evt) {
         self.socket.on(evt, function (data) {

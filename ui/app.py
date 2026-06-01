@@ -57,6 +57,15 @@ from engine.persistence import (
 
 from services.game_store import GameStore, get_game_store
 from services.names import generate_display_name, avatar_color, is_clean
+from services.avatars import (
+    DEFAULT_PLAYER_AVATAR_KEY,
+    bot_avatar_file_exists,
+    bot_avatar_static_path,
+    is_valid_player_avatar_key,
+    list_player_avatar_keys,
+    player_avatar_static_path,
+    PLAYER_AVATAR_LABELS,
+)
 from services.matchmaking import MatchmakingQueue, get_matchmaking_queue
 
 # Setup logging
@@ -67,7 +76,12 @@ logger = logging.getLogger(__name__)
 init_database()
 # Initialize multiplayer tables (models layer)
 from models.db import init_models as _init_models
-from models.guests import ensure_guest as _ensure_guest, get_guest as _get_guest, update_display_name as _update_display_name
+from models.guests import (
+    ensure_guest as _ensure_guest,
+    get_guest as _get_guest,
+    update_display_name as _update_display_name,
+    update_avatar_key as _update_avatar_key,
+)
 _init_models()
 
 
@@ -119,7 +133,7 @@ def _move_to_indices(state: GameState, move: Move, human_id: int) -> tuple[int, 
 # ---------------------------------------------------------------------------
 # Change BOT_DEFAULT_NAME to customise; add more names to BOT_NAMES for future use.
 BOT_NAMES = [
-    "Si Ahmed",
+    "Sidi Daoued",
     "Khalti Aïcha",
     "Houcine el-Kahwagi",
     "Brahim",
@@ -209,6 +223,9 @@ def _ensure_guest_session() -> None:
         name = generate_display_name()
         _ensure_guest(guest_id, display_name=name)
         session["display_name"] = name
+        if is_valid_player_avatar_key(DEFAULT_PLAYER_AVATAR_KEY):
+            session["avatar_key"] = DEFAULT_PLAYER_AVATAR_KEY
+            _update_avatar_key(guest_id, DEFAULT_PLAYER_AVATAR_KEY)
     elif "display_name" not in session:
         # Returning visitor whose session predates the name feature — load from DB.
         guest = _get_guest(session["guest_id"])
@@ -216,6 +233,8 @@ def _ensure_guest_session() -> None:
             guest["display_name"] if guest and guest["display_name"] != "Guest"
             else generate_display_name()
         )
+    if "avatar_key" not in session:
+        _resolve_guest_avatar_key(session.get("guest_id", ""))
 
 
 def csrf_protect(f):
@@ -248,17 +267,194 @@ def _static_url(filename: str) -> str:
     """Return a versioned URL for a static file using its mtime as cache-buster.
 
     If the file doesn't exist (e.g. in test), falls back to the plain URL.
+    Works outside Flask app/request context (e.g. eventlet background tasks).
     """
-    from flask import url_for as _url_for
+    from flask import has_app_context, url_for as _url_for
+
     fpath = Path(__file__).parent / "static" / filename
     try:
         v = int(fpath.stat().st_mtime)
     except OSError:
-        return _url_for("static", filename=filename)
-    return _url_for("static", filename=filename, v=v)
+        v = None
+
+    if has_app_context():
+        if v is None:
+            return _url_for("static", filename=filename)
+        return _url_for("static", filename=filename, v=v)
+
+    base = f"/static/{filename}"
+    return base if v is None else f"{base}?v={v}"
 
 
 app.jinja_env.globals["static_url"] = _static_url
+
+
+def _bot_avatar_url(display_name: str) -> str | None:
+    """Versioned URL for a bot portrait, or ``None`` if none configured."""
+    rel = bot_avatar_static_path(display_name)
+    if not rel or not bot_avatar_file_exists(display_name):
+        return None
+    return _static_url(rel)
+
+
+app.jinja_env.filters["bot_avatar_url_filter"] = _bot_avatar_url
+
+
+def _player_avatar_url(avatar_key: str | None) -> str | None:
+    rel = player_avatar_static_path(avatar_key)
+    if not rel:
+        return None
+    return _static_url(rel)
+
+
+def _avatar_key_for_guest(guest_id: str) -> str | None:
+    """Resolve avatar key for any guest (session, DB, or default male)."""
+    if not guest_id:
+        return None
+    if guest_id == session.get("guest_id"):
+        key = session.get("avatar_key")
+        if key and is_valid_player_avatar_key(key):
+            return key
+    guest = _get_guest(guest_id)
+    if guest:
+        db_key = guest.get("avatar_key")
+        if db_key and is_valid_player_avatar_key(db_key):
+            return db_key
+    if is_valid_player_avatar_key(DEFAULT_PLAYER_AVATAR_KEY):
+        return DEFAULT_PLAYER_AVATAR_KEY
+    return None
+
+
+def _player_presence_fields(guest_id: str) -> dict:
+    """Avatar fields stored on room player blobs."""
+    key = _avatar_key_for_guest(guest_id)
+    return {"avatar_key": key, "avatar_url": _player_avatar_url(key)}
+
+
+def _resolve_guest_avatar_key(guest_id: str) -> str | None:
+    if guest_id != session.get("guest_id"):
+        return _avatar_key_for_guest(guest_id)
+    key = session.get("avatar_key")
+    if key and is_valid_player_avatar_key(key):
+        return key
+    guest = _get_guest(guest_id) if guest_id else None
+    if guest:
+        db_key = guest.get("avatar_key")
+        if db_key and is_valid_player_avatar_key(db_key):
+            session["avatar_key"] = db_key
+            return db_key
+    if is_valid_player_avatar_key(DEFAULT_PLAYER_AVATAR_KEY):
+        session["avatar_key"] = DEFAULT_PLAYER_AVATAR_KEY
+        if guest_id:
+            _update_avatar_key(guest_id, DEFAULT_PLAYER_AVATAR_KEY)
+        return DEFAULT_PLAYER_AVATAR_KEY
+    session.pop("avatar_key", None)
+    return None
+
+
+def _opponent_avatar_url(
+    blob: dict | None,
+    opp_id: int,
+    *,
+    is_solo: bool,
+    opp_name: str,
+) -> str | None:
+    if is_solo:
+        return _bot_avatar_url(opp_name)
+    if not blob:
+        return None
+    players = blob.get("players", [])
+    if opp_id >= len(players):
+        return None
+    p = players[opp_id]
+    if p.get("is_bot"):
+        return _bot_avatar_url(BOT_DEFAULT_NAME)
+    url = p.get("avatar_url")
+    if url:
+        return url
+    key = p.get("avatar_key") or _avatar_key_for_guest(p.get("guest_id", ""))
+    return _player_avatar_url(key)
+
+
+def _ensure_blob_player_avatars(blob: dict) -> bool:
+    """Backfill avatar_key/url on human players; return True if blob was updated."""
+    changed = False
+    for p in blob.get("players", []):
+        if p.get("is_bot"):
+            continue
+        if p.get("avatar_url"):
+            continue
+        fields = _player_presence_fields(p.get("guest_id", ""))
+        p.update(fields)
+        changed = True
+    return changed
+
+
+def _sync_guest_profile_to_rooms(
+    guest_id: str,
+    display_name: str,
+    avatar_key: str | None,
+) -> None:
+    avatar_url = _player_avatar_url(avatar_key)
+    for room_id in app.game_store.list_active():
+        blob = app.game_store.get(room_id)
+        if not blob:
+            continue
+        changed = False
+        for p in blob.get("players", []):
+            if p.get("guest_id") == guest_id:
+                p["display_name"] = display_name
+                p["avatar_key"] = avatar_key
+                p["avatar_url"] = avatar_url
+                changed = True
+        if changed:
+            app.game_store.set(room_id, blob)
+            socketio.emit(
+                "player_profile_updated",
+                {
+                    "guest_id": guest_id,
+                    "display_name": display_name,
+                    "avatar_key": avatar_key,
+                    "avatar_url": avatar_url,
+                    "avatar_initial": display_name[0].upper() if display_name else "?",
+                    "avatar_color": avatar_color(guest_id),
+                },
+                to=room_id,
+            )
+
+
+def _player_avatar_options() -> list[dict]:
+    opts: list[dict] = []
+    for key in list_player_avatar_keys():
+        rel = player_avatar_static_path(key)
+        if not rel:
+            continue
+        opts.append({
+            "key": key,
+            "label": PLAYER_AVATAR_LABELS.get(key, key.title()),
+            "url": _static_url(rel),
+        })
+    return opts
+
+
+def _apply_guest_profile(ctx: dict) -> None:
+    """Merge display name + avatar fields into a template context dict."""
+    gid = session.get("guest_id", "")
+    dn = session.get("display_name", "Guest")
+    avatar_key = _resolve_guest_avatar_key(gid)
+    ctx["display_name"] = dn
+    ctx["guest_id"] = gid
+    ctx["avatar_initial"] = dn[0].upper() if dn else "G"
+    ctx["avatar_color"] = avatar_color(gid)
+    ctx["avatar_key"] = avatar_key
+    ctx["human_avatar_url"] = _player_avatar_url(avatar_key)
+    ctx["player_avatar_options"] = _player_avatar_options()
+
+
+def _guest_profile_kwargs() -> dict:
+    ctx: dict = {}
+    _apply_guest_profile(ctx)
+    return ctx
 
 
 def describe_move(move: Move) -> str:
@@ -1293,12 +1489,11 @@ class GameManager:
 
         opp_name = BOT_DEFAULT_NAME
         opp_mood = self._get_bot_mood() if is_solo else "😐"
-        if not is_solo and self._store:
-            blob = self._store.get(self.room_id)
-            if blob:
-                room_players = blob.get("players", [])
-                if opp_id < len(room_players):
-                    opp_name = room_players[opp_id].get("display_name", "Opponent")
+        room_blob = self._store.get(self.room_id) if self._store else None
+        if not is_solo and room_blob:
+            room_players = room_blob.get("players", [])
+            if opp_id < len(room_players):
+                opp_name = room_players[opp_id].get("display_name", "Opponent")
 
         return {
             "show_start_screen": False,
@@ -1330,6 +1525,9 @@ class GameManager:
             "human_is_current": is_cutter,
             "bot_name": opp_name,
             "bot_mood": opp_mood,
+            "bot_avatar_url": _opponent_avatar_url(
+                room_blob, opp_id, is_solo=is_solo, opp_name=opp_name
+            ),
             "bot_hand_count": len(opp.hand),
             "bot_captured_count": len(opp.captured_cards),
             "bot_chkobbas": opp.chkobbas,
@@ -1419,12 +1617,11 @@ class GameManager:
         # Opponent display name — use real name from room blob for multiplayer.
         opp_name = BOT_DEFAULT_NAME
         opp_mood = self._get_bot_mood() if is_solo else "😐"
-        if not is_solo and self._store:
-            blob = self._store.get(self.room_id)
-            if blob:
-                room_players = blob.get("players", [])
-                if opp_id < len(room_players):
-                    opp_name = room_players[opp_id].get("display_name", "Opponent")
+        room_blob = self._store.get(self.room_id) if self._store else None
+        if not is_solo and room_blob:
+            room_players = room_blob.get("players", [])
+            if opp_id < len(room_players):
+                opp_name = room_players[opp_id].get("display_name", "Opponent")
 
         # Debug info
         debug_data = {}
@@ -1521,6 +1718,9 @@ class GameManager:
             # Opponent ("bot" slot — could be the actual bot or the other human)
             "bot_name": opp_name,
             "bot_mood": opp_mood,
+            "bot_avatar_url": _opponent_avatar_url(
+                room_blob, opp_id, is_solo=is_solo, opp_name=opp_name
+            ),
             "bot_hand_count": len(opp.hand),
             "bot_captured_count": len(opp.captured_cards),
             "bot_chkobbas": opp.chkobbas,
@@ -1614,12 +1814,7 @@ def index():
         manager.next_round()
     ctx = manager.view_data()
 
-    # Guest profile — available on every page render.
-    _gid = session.get("guest_id", "")
-    _dn  = session.get("display_name", "Guest")
-    ctx["display_name"]   = _dn
-    ctx["avatar_initial"] = _dn[0].upper() if _dn else "G"
-    ctx["avatar_color"]   = avatar_color(_gid)
+    _apply_guest_profile(ctx)
 
     return render_template("index.html", **ctx)
 
@@ -1766,10 +1961,33 @@ def api_update_name():
     if not guest_id:
         return jsonify({"error": "No guest session"}), 401
 
+    avatar_key_raw = data.get("avatar_key")
+    avatar_key: str | None
+    if avatar_key_raw is None:
+        avatar_key = _resolve_guest_avatar_key(guest_id)
+    elif avatar_key_raw == "":
+        avatar_key = None
+        session.pop("avatar_key", None)
+        _update_avatar_key(guest_id, None)
+    elif is_valid_player_avatar_key(str(avatar_key_raw)):
+        avatar_key = str(avatar_key_raw)
+        session["avatar_key"] = avatar_key
+        _update_avatar_key(guest_id, avatar_key)
+    else:
+        return jsonify({"error": "Invalid avatar choice"}), 400
+
     _update_display_name(guest_id, name)
     session["display_name"] = name
-    logger.info("Guest %.8s changed name to %r", guest_id, name)
-    return jsonify({"ok": True, "name": name})
+    _sync_guest_profile_to_rooms(guest_id, name, avatar_key)
+    logger.info("Guest %.8s changed name to %r avatar=%r", guest_id, name, avatar_key)
+    return jsonify({
+        "ok": True,
+        "name": name,
+        "avatar_key": avatar_key,
+        "avatar_url": _player_avatar_url(avatar_key),
+        "avatar_initial": name[0].upper() if name else "G",
+        "avatar_color": avatar_color(guest_id),
+    })
 
 
 @app.route("/next_round", methods=["POST"])
@@ -1796,6 +2014,7 @@ def _create_mp_room(
 
     room_id = secrets.token_hex(12)
     now = datetime.now(timezone.utc).isoformat()
+    presence = _player_presence_fields(guest_id)
     blob = {
         "room_id": room_id,
         "mode": "1v1",
@@ -1813,6 +2032,7 @@ def _create_mp_room(
                 "is_bot": False,
                 "connected": False,
                 "sid": None,
+                **presence,
             }
         ],
         "game": {},
@@ -1852,12 +2072,12 @@ def lobby():
         )
     _gid = session.get("guest_id", "")
     _dn  = session.get("display_name", "Guest")
+    profile = _guest_profile_kwargs()
     return render_template(
         "lobby.html",
         open_rooms=open_rooms,
         display_name=_dn,
-        avatar_initial=_dn[0].upper() if _dn else "G",
-        avatar_color=avatar_color(_gid),
+        **profile,
     )
 
 
@@ -1869,6 +2089,11 @@ def play_room(room_id: str):
     display_name = session.get("display_name", "Guest")
 
     blob = app.game_store.get(room_id)
+    profile = _guest_profile_kwargs()
+    if blob is not None and blob.get("mode") == "1v1":
+        if _ensure_blob_player_avatars(blob):
+            app.game_store.set(room_id, blob)
+
     if blob is None or blob.get("mode") not in ("1v1", "solo"):
         return render_template(
             "play.html",
@@ -1878,9 +2103,7 @@ def play_room(room_id: str):
             my_seat=0,
             game_active=False,
             invite_url=None,
-            display_name=display_name,
-            avatar_initial=display_name[0].upper() if display_name else "G",
-            avatar_color=avatar_color(guest_id),
+            **profile,
             **_empty_game_ctx(),
         )
 
@@ -1897,6 +2120,8 @@ def play_room(room_id: str):
                 game_ctx = _empty_game_ctx()
         else:
             game_ctx = _empty_game_ctx()
+            game_ctx["bot_name"] = BOT_DEFAULT_NAME
+            game_ctx["bot_avatar_url"] = _bot_avatar_url(BOT_DEFAULT_NAME)
         # Strip keys that are passed explicitly to avoid duplicate-keyword errors.
         for _k in ("my_seat", "room_id", "game_mode", "show_start_screen"):
             game_ctx.pop(_k, None)
@@ -1910,9 +2135,7 @@ def play_room(room_id: str):
             my_seat=0,
             game_active=game_active,
             invite_url=None,
-            display_name=display_name,
-            avatar_initial=display_name[0].upper() if display_name else "G",
-            avatar_color=avatar_color(guest_id),
+            **profile,
             **game_ctx,
         )
 
@@ -1935,9 +2158,7 @@ def play_room(room_id: str):
             my_seat=0,
             game_active=False,
             invite_url=None,
-            display_name=display_name,
-            avatar_initial=display_name[0].upper(),
-            avatar_color=avatar_color(guest_id),
+            **profile,
             **_empty_game_ctx(),
         )
 
@@ -1945,6 +2166,7 @@ def play_room(room_id: str):
         # Join as player 1.
         from datetime import datetime, timezone
         my_seat = len(blob["players"])  # will be 1
+        presence = _player_presence_fields(guest_id)
         blob["players"].append(
             {
                 "guest_id": guest_id,
@@ -1953,6 +2175,7 @@ def play_room(room_id: str):
                 "is_bot": False,
                 "connected": False,
                 "sid": None,
+                **presence,
             }
         )
         blob["last_action_at"] = datetime.now(timezone.utc).isoformat()
@@ -1968,6 +2191,8 @@ def play_room(room_id: str):
                 "display_name": display_name,
                 "avatar_initial": display_name[0].upper(),
                 "avatar_color": avatar_color(guest_id),
+                "avatar_key": presence["avatar_key"],
+                "avatar_url": presence["avatar_url"],
                 "room_id": room_id,
             },
             to=room_id,
@@ -2014,9 +2239,7 @@ def play_room(room_id: str):
         my_seat=my_seat,
         game_active=game_active,
         invite_url=invite_url,
-        display_name=display_name,
-        avatar_initial=display_name[0].upper() if display_name else "G",
-        avatar_color=avatar_color(guest_id),
+        **profile,
         **game_ctx,
     )
 
@@ -2050,6 +2273,7 @@ def _empty_game_ctx() -> dict:
         "human_is_current": False,
         "bot_name": "Opponent",
         "bot_mood": "😐",
+        "bot_avatar_url": None,
         "bot_hand_count": 0,
         "bot_captured_count": 0,
         "bot_chkobbas": 0,
@@ -2098,6 +2322,7 @@ def api_quickmatch():
         else:
             # Pair: add ourselves as player 1.
             from datetime import datetime, timezone
+            presence = _player_presence_fields(guest_id)
             blob["players"].append(
                 {
                     "guest_id": guest_id,
@@ -2106,6 +2331,7 @@ def api_quickmatch():
                     "is_bot": False,
                     "connected": False,
                     "sid": None,
+                    **presence,
                 }
             )
             blob["last_action_at"] = datetime.now(timezone.utc).isoformat()
@@ -2119,6 +2345,19 @@ def api_quickmatch():
                     "status": "matched",
                     "room_id": room_id,
                     "opponent_name": display_name,
+                },
+                to=room_id,
+            )
+            socketio.emit(
+                "room_player_joined",
+                {
+                    "seat": 1,
+                    "display_name": display_name,
+                    "avatar_initial": display_name[0].upper(),
+                    "avatar_color": avatar_color(guest_id),
+                    "avatar_key": presence["avatar_key"],
+                    "avatar_url": presence["avatar_url"],
+                    "room_id": room_id,
                 },
                 to=room_id,
             )

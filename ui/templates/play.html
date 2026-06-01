@@ -20,6 +20,7 @@
     {% include 'partials/sound_urls.html' %}
 </head>
 <body{% if not room_not_found and not room_full %} class="session-game"{% endif %}>
+{% from 'partials/player_avatar.html' import player_avatar %}
 <div id="syncing-dot" aria-hidden="true"></div>
 
 <!-- ════════════════ HUD ════════════════ -->
@@ -28,10 +29,12 @@
 
     <div class="hud-scores">
         <div class="hud-score you">
-            <span class="hs-label">
-                <span class="avatar-dot" style="background:{{ avatar_color }}">{{ avatar_initial }}</span>
+            <button class="hs-label player-name-btn" id="open-name-modal" title="Change your name" aria-label="Change name">
+                <span id="hud-player-avatar" class="human-avatar-slot">
+                    {{ player_avatar(avatar_initial, avatar_color, human_avatar_url|default(none), false, 'avatar-hs') }}
+                </span>
                 <span class="hs-name-text" title="{{ display_name|e }}">{{ display_name }}</span>
-            </span>
+            </button>
             <span class="hs-val">{{ match_scores[0] if not game_active else match_scores[0] }}</span>
         </div>
         {% if target_score %}
@@ -46,7 +49,10 @@
         </div>
         {% endif %}
         <div class="hud-score bot">
-            <span class="hs-label">Opponent</span>
+            <span class="hs-label opp-hs-label">
+                {% if game_active|default(false) and bot_avatar_url %}{{ player_avatar('', '', bot_avatar_url, false, 'avatar-hs') }}{% endif %}
+                <span class="hs-name-text">{{ bot_name|default('Opponent') if game_active|default(false) else 'Opponent' }}</span>
+            </span>
             <span class="hs-val">{{ match_scores[1] }}</span>
         </div>
     </div>
@@ -132,9 +138,15 @@
             {% set p0 = blob.players[0] if blob.players|length > 0 else {} %}
             {% set p1 = blob.players[1] if blob.players|length > 1 else {} %}
             <div class="waiting-player" id="wp-0">
+                {% if my_seat|default(0) == 0 and human_avatar_url %}
+                    {{ player_avatar('', '', human_avatar_url, true) }}
+                {% elif p0.avatar_url|default(none) %}
+                    {{ player_avatar('', '', p0.avatar_url, true) }}
+                {% else %}
                 <span class="avatar-dot avatar-lg" style="background:{{ p0.guest_id | default('') | avatar_color_filter }}">
                     {{ (p0.display_name or 'P1')[0] | upper }}
                 </span>
+                {% endif %}
                 <span class="waiting-player-name">{{ p0.display_name or 'Player 1' }}</span>
                 <span class="waiting-badge joined">joined</span>
             </div>
@@ -143,9 +155,17 @@
 
             <div class="waiting-player waiting-player-empty" id="wp-1">
                 {% if p1 %}
+                    {% if my_seat|default(0) == 1 and human_avatar_url %}
+                        {{ player_avatar('', '', human_avatar_url, true) }}
+                    {% elif p1.is_bot and bot_avatar_url %}
+                        {{ player_avatar('', '', bot_avatar_url, true) }}
+                    {% elif p1.avatar_url|default(none) %}
+                        {{ player_avatar('', '', p1.avatar_url, true) }}
+                    {% else %}
                     <span class="avatar-dot avatar-lg" style="background:{{ p1.guest_id | default('') | avatar_color_filter }}">
                         {{ (p1.display_name or 'P2')[0] | upper }}
                     </span>
+                    {% endif %}
                     <span class="waiting-player-name">{{ p1.display_name or 'Player 2' }}</span>
                     <span class="waiting-badge joined">joined</span>
                 {% else %}
@@ -210,23 +230,30 @@
 
     <!-- ── Opponent Zone ── -->
     <div class="zone opp-zone" aria-label="Opponent zone">
-        <div class="zone-meta">
-            <span class="zone-name opp-name">
-                <span class="conn-dot conn-dot-opp" id="opp-conn-dot" title="Opponent connection"></span>
-                <span class="bot-mood" title="Opponent mood">{{ bot_mood }}</span>
-                {{ bot_name }}
-            </span>
-            <span class="zone-stats"><span class="chk-star">{{ bot_chkobbas }}✦</span></span>
-            <span class="zone-status">
-                {% if opp_first_js_deal|default(false) %}
-                {% elif game_active and not human_is_current and not round_over and not has_pending_bot %}
-                    <span class="badge thinking">Thinking…</span>
-                {% elif game_active and has_pending_bot %}
-                    <span class="badge thinking">Playing…</span>
-                {% endif %}
-            </span>
-        </div>
         <div class="zone-hand-row">
+            <div class="zone-side zone-side-opp">
+                <div class="zone-identity">
+                    {% if bot_avatar_url %}
+                    <div class="zone-avatar-inline">
+                        {{ player_avatar('', '', bot_avatar_url, false, 'zone-avatar-sm') }}
+                    </div>
+                    {% endif %}
+                    <span class="zone-name opp-name">
+                        <span class="conn-dot conn-dot-opp" id="opp-conn-dot" title="Opponent connection"></span>
+                        <span class="bot-mood" title="Opponent mood">{{ bot_mood }}</span>
+                        <span class="zone-display-name">{{ bot_name }}</span>
+                    </span>
+                    <span class="zone-stats"><span class="chk-star">{{ bot_chkobbas }}✦</span></span>
+                    <span class="zone-status">
+                        {% if opp_first_js_deal|default(false) %}
+                        {% elif game_active and not human_is_current and not round_over and not has_pending_bot %}
+                            <span class="badge thinking">Thinking…</span>
+                        {% elif game_active and has_pending_bot %}
+                            <span class="badge thinking">Playing…</span>
+                        {% endif %}
+                    </span>
+                </div>
+            </div>
             <div class="zone-cards init-hidden" id="bot-cards">
                 {% if opp_first_js_deal|default(false) %}
                 <span class="zone-empty">No cards</span>
@@ -317,18 +344,22 @@
                     <span class="zone-empty">No cards</span>
                 {% endif %}
             </div>
-        </div>
-        <div class="zone-meta zone-meta-bottom">
-            <span class="zone-stats"><span class="chk-star">{{ human_chkobbas }}✦</span></span>
-            <span class="zone-name player-name">
-                <span class="avatar-dot" style="background:{{ avatar_color }}">{{ avatar_initial }}</span>
-                <span id="zone-display-name">{{ display_name }}</span>
-            </span>
-            <span class="zone-status">
-                {% if game_active and human_is_current and not round_over and not has_pending_bot %}
-                    <span class="badge your-turn-badge">Your turn</span>
-                {% endif %}
-            </span>
+            <div class="zone-side zone-side-player">
+                <div class="zone-identity zone-identity-player">
+                    <div class="zone-avatar-inline human-avatar-slot" id="zone-player-avatar">
+                        {{ player_avatar(avatar_initial, avatar_color, human_avatar_url|default(none), false, 'zone-avatar-sm') }}
+                    </div>
+                    <span class="zone-name player-name">
+                        <span id="zone-display-name">{{ display_name }}</span>
+                    </span>
+                    <span class="zone-stats"><span class="chk-star">{{ human_chkobbas }}✦</span></span>
+                    <span class="zone-status">
+                        {% if game_active and human_is_current and not round_over and not has_pending_bot %}
+                            <span class="badge your-turn-badge">Your turn</span>
+                        {% endif %}
+                    </span>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -336,16 +367,13 @@
          aria-labelledby="cut-choice-title"
          style="display:{% if awaiting_cut_choice|default(false) %}flex{% else %}none{% endif %};">
         <div class="cut-choice-panel">
-            <h2 id="cut-choice-title" class="cut-choice-title">The cut</h2>
+            <h2 id="cut-choice-title" class="cut-choice-title">Deck cut</h2>
             {% if awaiting_cut_choice|default(false) and is_opening_cutter|default(false) and cut_card %}
-            <p class="cut-choice-lead">You open. This is the top card of the bottom half after the cut.</p>
             <div id="cut-card-display" class="card cut-card-display {% if '♥' in cut_card or '♦' in cut_card %}red-suit{% endif %}">{{ cut_card }}</div>
             <div class="cut-choice-actions">
                 <button type="button" class="btn-deal" id="cut-keep-btn">Keep in hand</button>
-                <button type="button" class="btn-deal btn-secondary" id="cut-discard-btn">Place on table</button>
+                <button type="button" class="btn-deal btn-secondary" id="cut-discard-btn">Put on table</button>
             </div>
-            <p class="cut-choice-rules"><strong>Keep</strong>: cut card in your hand + 2 dealt to you; opponent gets 3; 4 on the table.<br>
-            <strong>On table</strong>: cut card on the table + 3 more; you get 3; opponent gets 3.</p>
             {% elif awaiting_cut_choice|default(false) %}
             <p class="cut-choice-wait">Waiting for the dealer to reveal the cut…</p>
             {% endif %}
@@ -374,7 +402,10 @@
         <div class="nb-subtitle">round results</div>
         <div class="nb-columns">
             <span>You</span>
-            <span>{{ bot_name }}</span>
+            <span class="nb-opp-col">
+                {% if bot_avatar_url %}{{ player_avatar('', '', bot_avatar_url, false, 'avatar-hs') }}{% endif %}
+                {{ bot_name }}
+            </span>
         </div>
         {% for row in round_breakdown %}
         <div class="nb-row">
@@ -482,14 +513,18 @@
     "match_scores":                 match_scores,
     "bot_mood":                     bot_mood,
     "bot_name":                     bot_name,
+    "bot_avatar_url":               bot_avatar_url|default(none),
     "last_played_card":             last_played_card,
     "last_played_by":               last_played_by,
     "room_id":                      blob.room_id,
     "my_seat":                      my_seat,
     "game_mode":                    game_mode,
     "display_name":                 display_name,
+    "guest_id":                     guest_id|default(''),
     "avatar_initial":               avatar_initial,
     "avatar_color":                 avatar_color,
+    "avatar_key":                   avatar_key|default(none),
+    "human_avatar_url":             human_avatar_url|default(none),
     "game_active":                  game_active,
     "awaiting_cut_choice":          awaiting_cut_choice|default(false),
     "cut_card":                     cut_card|default(none),
@@ -1606,13 +1641,10 @@ function updateCutOverlayPlay(st){
         _lastSeenCutCard=st.cut_card;
         var red=(/[♥♦]/).test(st.cut_card)?' red-suit':'';
         panel.innerHTML='<h2 id="cut-choice-title" class="cut-choice-title">Deck cut</h2>'+
-            '<p class="cut-choice-lead">You play first. This is the top card of the lower half after the cut.</p>'+
             '<div id="cut-card-display" class="card cut-card-display'+red+'">'+_escapeCutHtmlPlay(st.cut_card)+'</div>'+
             '<div class="cut-choice-actions">'+
             '<button type="button" class="btn-deal" id="cut-keep-btn">Keep in hand</button>'+
-            '<button type="button" class="btn-deal btn-secondary" id="cut-discard-btn">Put on table</button></div>'+
-            '<p class="cut-choice-rules"><strong>Keep</strong>: card in your hand + 2 dealt; opponent 3; 4 on table.<br>'+
-            '<strong>Table</strong>: card on table + 3 more on table; you 3; opponent 3.</p>';
+            '<button type="button" class="btn-deal btn-secondary" id="cut-discard-btn">Put on table</button></div>';
         var cd=document.getElementById('cut-card-display'); if(cd) enhance(cd);
         bindCutChoiceButtonsPlay();
     } else {
@@ -2351,15 +2383,92 @@ document.addEventListener('DOMContentLoaded', function(){
         var slotEl = document.getElementById('wp-1');
         if(slotEl && !data.is_self){
             slotEl.classList.remove('waiting-player-empty');
+            var avHtml = data.avatar_url
+                ? '<img class="avatar-img avatar-lg" src="'+data.avatar_url+'" alt="">'
+                : '<span class="avatar-dot avatar-lg" style="background:'+(data.avatar_color||'#888')+'">'
+                  + (data.avatar_initial || '?') + '</span>';
             slotEl.innerHTML =
-                '<span class="avatar-dot avatar-lg" style="background:'+(data.avatar_color||'#888')+'">'
-                +   (data.avatar_initial || '?')
-                + '</span>'
+                avHtml
                 + '<span class="waiting-player-name">'+(data.display_name||'Opponent')+'</span>'
                 + '<span class="waiting-badge joined">joined</span>';
         }
         var msg = document.getElementById('waiting-status-msg');
         if(msg) msg.textContent = 'Both players joined \u2014 starting game\u2026';
+    });
+
+    function waitingAvatarHtml(data){
+        if(data.avatar_url){
+            return '<img class="avatar-img avatar-lg" src="'+data.avatar_url+'" alt="">';
+        }
+        return '<span class="avatar-dot avatar-lg" style="background:'+(data.avatar_color||'#888')+'">'
+            + (data.avatar_initial || '?') + '</span>';
+    }
+
+    function refreshWaitingSlot(seat, data){
+        var slotEl = document.getElementById('wp-' + seat);
+        if(!slotEl) return;
+        slotEl.classList.remove('waiting-player-empty');
+        var nameEl = slotEl.querySelector('.waiting-player-name');
+        var name = data.display_name || (nameEl ? nameEl.textContent : 'Player');
+        slotEl.innerHTML =
+            waitingAvatarHtml(data)
+            + '<span class="waiting-player-name">'+name+'</span>'
+            + '<span class="waiting-badge joined">joined</span>';
+    }
+
+    window.Game.on('player_profile_updated', function(data){
+        if(!data || !data.guest_id) return;
+        if(data.guest_id === ps.guest_id){
+            document.querySelectorAll('.hs-name-text').forEach(function(el){
+                if(el.closest('.hud-score.you')) {
+                    el.textContent = data.display_name || el.textContent;
+                    el.title = data.display_name || el.title;
+                }
+            });
+            var zn = document.getElementById('zone-display-name');
+            if(zn) zn.textContent = data.display_name || zn.textContent;
+            document.querySelectorAll('.human-avatar-slot').forEach(function(el){
+                var url = data.avatar_url;
+                var imgCls = el.id === 'zone-player-avatar' ? 'avatar-img zone-avatar-sm' : 'avatar-img avatar-hs';
+                if(url){
+                    el.innerHTML = '<img class="'+imgCls+'" src="'+url+'" alt="">';
+                }
+            });
+            if(typeof ps.my_seat === 'number'){
+                refreshWaitingSlot(ps.my_seat, data);
+            }
+            return;
+        }
+        var oppSeat = ps.my_seat === 0 ? 1 : 0;
+        refreshWaitingSlot(oppSeat, data);
+        if(data.avatar_url){
+            var oppAv = document.querySelector('.opp-zone .zone-avatar-inline');
+            if(!oppAv){
+                var identity = document.querySelector('.opp-zone .zone-identity');
+                if(identity){
+                    oppAv = document.createElement('div');
+                    oppAv.className = 'zone-avatar-inline';
+                    identity.insertBefore(oppAv, identity.firstChild);
+                }
+            }
+            if(oppAv){
+                oppAv.innerHTML = '<img class="avatar-img zone-avatar-sm" src="'+data.avatar_url+'" alt="">';
+            }
+            var oppHud = document.querySelector('.hud-score.bot .opp-hs-label');
+            if(oppHud && !oppHud.querySelector('.avatar-img')){
+                var img = document.createElement('img');
+                img.className = 'avatar-img avatar-hs';
+                img.src = data.avatar_url;
+                img.alt = '';
+                oppHud.insertBefore(img, oppHud.firstChild);
+            }
+        }
+        document.querySelectorAll('.hud-score.bot .hs-name-text').forEach(function(el){
+            el.textContent = data.display_name || el.textContent;
+        });
+        document.querySelectorAll('.opp-zone .zone-display-name').forEach(function(el){
+            el.textContent = data.display_name || el.textContent;
+        });
     });
 
     // ── Waiting state update (e.g. reconnect during countdown) ───────────
@@ -2642,6 +2751,173 @@ document.addEventListener('DOMContentLoaded', function(){
     function toastsEnabled(){ return localStorage.getItem('chk_toasts')!=='off'; }
     window.showCommentaryToast=showToast;
     window.toastsEnabled=toastsEnabled;
+})();
+</script>
+
+<!-- ════ Change-name modal ════ -->
+<div id="name-modal" class="name-modal-backdrop" role="dialog" aria-modal="true" aria-label="Change your name" hidden>
+    <div class="name-modal-box">
+        <h2 class="name-modal-title">Your profile</h2>
+        {% if player_avatar_options %}
+        <div class="avatar-picker" id="avatar-picker" role="radiogroup" aria-label="Choose avatar">
+            {% for opt in player_avatar_options %}
+            <button type="button" class="avatar-pick-btn{% if avatar_key == opt.key %} selected{% endif %}"
+                    data-key="{{ opt.key }}" aria-label="{{ opt.label }}" aria-pressed="{{ 'true' if avatar_key == opt.key else 'false' }}">
+                <img src="{{ opt.url }}" alt="">
+            </button>
+            {% endfor %}
+        </div>
+        {% endif %}
+        <div id="name-modal-avatar-preview" class="name-modal-avatar-preview human-avatar-slot">
+            {{ player_avatar(avatar_initial, avatar_color, human_avatar_url|default(none), false, 'name-modal-avatar-img') }}
+        </div>
+        <input id="name-modal-input" class="name-modal-input" type="text" maxlength="30"
+               placeholder="Enter a name…" autocomplete="off" spellcheck="false"
+               value="{{ display_name }}" aria-label="Display name">
+        <p id="name-modal-error" class="name-modal-error" hidden></p>
+        <div class="name-modal-actions">
+            <button id="name-modal-save" class="btn-deal name-modal-save">Save</button>
+            <button id="name-modal-cancel" class="name-modal-cancel">Cancel</button>
+        </div>
+    </div>
+</div>
+
+<script>
+(function(){
+    var modal   = document.getElementById('name-modal');
+    if(!modal) return;
+    var input   = document.getElementById('name-modal-input');
+    var errEl   = document.getElementById('name-modal-error');
+    var saveBtn = document.getElementById('name-modal-save');
+    var preview = document.getElementById('name-modal-avatar-preview');
+    var picker  = document.getElementById('avatar-picker');
+    var selectedAvatarKey = {{ avatar_key|default(none)|tojson }};
+
+    function avatarImgClassForSlot(el){
+        if(!el) return 'avatar-hs';
+        if(el.id === 'zone-player-avatar') return 'zone-avatar-sm';
+        if(el.id === 'name-modal-avatar-preview') return 'name-modal-avatar-img';
+        return 'avatar-hs';
+    }
+
+    function renderAvatarSlot(el, data){
+        if(!el) return;
+        var url = data.avatar_url;
+        var initial = data.avatar_initial || '?';
+        var color = data.avatar_color || '#888';
+        var imgCls = 'avatar-img ' + avatarImgClassForSlot(el);
+        if(url){
+            el.innerHTML = '<img class="'+imgCls+'" src="'+url+'" alt="">';
+        } else {
+            var dotCls = (el.id === 'zone-player-avatar') ? 'avatar-dot zone-avatar-sm' : 'avatar-dot avatar-hs';
+            if(el.id === 'name-modal-avatar-preview') dotCls = 'avatar-dot name-modal-avatar-img';
+            el.innerHTML = '<span class="'+dotCls+'" style="background:'+color+'">'+initial+'</span>';
+        }
+    }
+
+    function refreshHumanAvatars(data){
+        document.querySelectorAll('.human-avatar-slot').forEach(function(el){
+            renderAvatarSlot(el, data);
+        });
+    }
+
+    function syncPickerSelection(){
+        if(!picker) return;
+        picker.querySelectorAll('.avatar-pick-btn').forEach(function(btn){
+            var on = btn.dataset.key === selectedAvatarKey;
+            btn.classList.toggle('selected', on);
+            btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+        });
+    }
+
+    function previewFromSelection(name){
+        var opt = picker ? picker.querySelector('.avatar-pick-btn[data-key="'+selectedAvatarKey+'"] img') : null;
+        var data = {
+            avatar_url: opt ? opt.getAttribute('src') : null,
+            avatar_initial: (name || '?')[0].toUpperCase(),
+            avatar_color: {{ avatar_color|tojson }}
+        };
+        if(preview) renderAvatarSlot(preview, data);
+    }
+
+    function getCSRF(){
+        var m = document.querySelector('meta[name="csrf-token"]');
+        return m ? m.getAttribute('content') : '';
+    }
+
+    function open(){
+        errEl.hidden = true;
+        input.value = (document.getElementById('zone-display-name') ||
+                       document.querySelector('.hud-score.you .hs-name-text') ||
+                       {textContent:''}).textContent.trim();
+        modal.hidden = false;
+        syncPickerSelection();
+        previewFromSelection(input.value.trim());
+        input.focus();
+        input.select();
+    }
+
+    function close(){ modal.hidden = true; }
+
+    function showError(msg){ errEl.textContent = msg; errEl.hidden = false; }
+
+    document.querySelectorAll('#open-name-modal').forEach(function(btn){
+        btn.addEventListener('click', open);
+    });
+
+    modal.addEventListener('click', function(e){
+        if(e.target === modal) close();
+    });
+
+    document.getElementById('name-modal-cancel').addEventListener('click', close);
+
+    if(input) input.addEventListener('keydown', function(e){
+        if(e.key === 'Enter')  saveBtn.click();
+        if(e.key === 'Escape') close();
+    });
+
+    if(input) input.addEventListener('input', function(){ previewFromSelection(this.value); });
+
+    if(picker){
+        picker.addEventListener('click', function(e){
+            var btn = e.target.closest('.avatar-pick-btn');
+            if(!btn) return;
+            selectedAvatarKey = btn.dataset.key || null;
+            syncPickerSelection();
+            previewFromSelection((input.value || '').trim());
+        });
+    }
+
+    saveBtn.addEventListener('click', function(){
+        var name = (input.value || '').trim();
+        if(!name){ showError('Name cannot be empty.'); return; }
+        if(name.length > 30){ showError('Max 30 characters.'); return; }
+
+        saveBtn.disabled = true;
+        fetch('/api/profile/name', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                name: name,
+                avatar_key: selectedAvatarKey || '',
+                _csrf_token: getCSRF()
+            })
+        })
+        .then(function(r){ return r.json().then(function(d){ return {ok:r.ok,data:d}; }); })
+        .then(function(res){
+            if(!res.ok){ showError(res.data.error || 'Failed to save.'); return; }
+            selectedAvatarKey = res.data.avatar_key || null;
+            document.querySelectorAll('.hud-score.you .hs-name-text').forEach(function(el){
+                el.textContent = name; el.title = name;
+            });
+            var zn = document.getElementById('zone-display-name');
+            if(zn) zn.textContent = name;
+            refreshHumanAvatars(res.data);
+            close();
+        })
+        .catch(function(){ showError('Network error — try again.'); })
+        .finally(function(){ saveBtn.disabled = false; });
+    });
 })();
 </script>
 

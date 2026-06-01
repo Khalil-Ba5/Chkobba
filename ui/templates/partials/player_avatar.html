@@ -1,0 +1,10 @@
+{# Image avatar when *image_url* is set; otherwise colored initial dot. #}
+{% macro player_avatar(initial='?', color='#888', image_url=none, large=false, extra_class='') %}
+{% if image_url %}
+<img class="avatar-img{% if large %} avatar-lg{% endif %}{% if extra_class %} {{ extra_class }}{% endif %}"
+     src="{{ image_url }}" alt="" loading="lazy" decoding="async">
+{% else %}
+<span class="avatar-dot{% if large %} avatar-lg{% endif %}{% if extra_class %} {{ extra_class }}{% endif %}"
+      style="background:{{ color }}">{{ initial }}</span>
+{% endif %}
+{% endmacro %}

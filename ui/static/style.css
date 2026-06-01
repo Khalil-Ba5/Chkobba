@@ -425,9 +425,79 @@ body.session-game .felt.chkobba-flash {
 }
 .zone-meta-bottom { justify-content: flex-end; }
 
+.zone-side {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    align-self: center;
+    min-width: 0;
+}
+.zone-side .zone-identity {
+    flex-direction: column;
+    align-items: center;
+    gap: .12rem;
+    max-width: 76px;
+    text-align: center;
+}
+.zone-side .zone-name {
+    display: inline-flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: .2rem;
+    font-size: .62rem;
+    line-height: 1.15;
+    letter-spacing: .04em;
+}
+.zone-side .zone-display-name {
+    display: block;
+    max-width: 72px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.zone-side .zone-stats {
+    flex: none;
+    font-size: .62rem;
+    line-height: 1.2;
+}
+.zone-side .zone-status {
+    justify-content: center;
+}
+.zone-side .zone-status .badge {
+    font-size: .58rem;
+    padding: .12rem .4rem;
+}
+.zone-avatar-inline {
+    line-height: 0;
+}
+.zone-avatar-inline .avatar-img.zone-avatar-sm,
+.zone-avatar-inline .avatar-dot.zone-avatar-sm {
+    width: 36px !important;
+    height: 36px !important;
+    font-size: .85rem !important;
+}
+
 .zone-name {
+    display: inline-flex; align-items: center; gap: .35rem;
     font-weight: 700; font-size: .82rem;
     letter-spacing: .05em; text-transform: uppercase;
+}
+.zone-identity {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: .45rem;
+    flex-shrink: 0;
+}
+.zone-meta-bottom .zone-identity {
+    align-items: flex-end;
+}
+
+.zone-display-name {
+    text-transform: none;
+    letter-spacing: .02em;
 }
 .opp-name    { color: var(--orange); }
 .player-name { color: var(--green); }
@@ -625,29 +695,37 @@ html.chk-opp-first-boot #bot-cards {
     gap: .5rem;
 }
 
-/* Player zone: cap pile anchored left, hand truly centred */
-.player-zone .zone-hand-row {
-    display: grid;
-    grid-template-columns: 68px 1fr 68px;
-    align-items: center;
-    gap: 0;
-}
-
-/* Opponent zone: hand centred, cap pile anchored right */
+/* Opponent zone: identity | hand | captured pile */
 .opp-zone .zone-hand-row {
     display: grid;
-    grid-template-columns: 68px 1fr 68px;
+    grid-template-columns: 76px 1fr 68px;
     align-items: center;
     gap: 0;
 }
-.opp-zone .zone-hand-row .zone-cards { grid-column: 2; }
-.opp-zone .zone-hand-row .cap-pile   { grid-column: 3; }
+.opp-zone .zone-hand-row .zone-side   { grid-column: 1; }
+.opp-zone .zone-hand-row .zone-cards  { grid-column: 2; }
+.opp-zone .zone-hand-row .cap-pile    { grid-column: 3; }
+
+/* Player zone: captured pile | hand | identity */
+.player-zone .zone-hand-row {
+    display: grid;
+    grid-template-columns: 68px 1fr 76px;
+    align-items: center;
+    gap: 0;
+}
+.player-zone .zone-hand-row .cap-pile   { grid-column: 1; }
+.player-zone .zone-hand-row .zone-cards  { grid-column: 2; }
+.player-zone .zone-hand-row .zone-side   { grid-column: 3; }
 
 @media (max-width: 600px) {
-    .player-zone .zone-hand-row,
     .opp-zone .zone-hand-row {
-        grid-template-columns: 56px 1fr 56px;
+        grid-template-columns: 64px 1fr 56px;
     }
+    .player-zone .zone-hand-row {
+        grid-template-columns: 56px 1fr 64px;
+    }
+    .zone-side .zone-identity { max-width: 64px; }
+    .zone-side .zone-display-name { max-width: 60px; }
 }
 
 /* ── Captured pile in bot / player zones ── */
@@ -1245,6 +1323,9 @@ html.chk-opp-first-boot #bot-cards {
     padding-left: 40px;
     margin-bottom: .2rem;
 }
+.nb-opp-col {
+    display: inline-flex; align-items: center; gap: .35rem;
+}
 
 /* Scoring rows */
 .nb-row {
@@ -1335,6 +1416,29 @@ html.chk-opp-first-boot #bot-cards {
     text-transform: uppercase;
 }
 
+.avatar-img {
+    display: inline-block;
+    width: 22px; height: 22px;
+    border-radius: 50%;
+    object-fit: cover;
+    flex-shrink: 0;
+    vertical-align: middle;
+    box-shadow: 0 1px 4px rgba(0,0,0,.4);
+}
+.zone-name .avatar-img { width: 24px; height: 24px; }
+.avatar-img.zone-avatar-lg {
+    width: 56px;
+    height: 56px;
+    box-shadow: 0 2px 8px rgba(0,0,0,.45);
+}
+.avatar-img.zone-avatar-sm {
+    width: 36px;
+    height: 36px;
+}
+.avatar-img.avatar-hs { width: 28px; height: 28px; }
+.opp-hs-label { display: inline-flex; align-items: center; gap: .35rem; max-width: min(42vw, 10rem); }
+.opp-hs-label .hs-name-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 /* ── HUD player-name button ─────────────────────────────────────────────── */
 .player-name-btn {
     all: unset;
@@ -1403,6 +1507,45 @@ html.chk-opp-first-boot #bot-cards {
     font-size: 1.5rem; font-weight: 800; color: #fff;
     box-shadow: 0 4px 16px rgba(0,0,0,.4);
     transition: background .2s;
+}
+.name-modal-avatar-preview {
+    margin: 0 auto .85rem;
+    line-height: 0;
+    text-align: center;
+}
+.avatar-img.name-modal-avatar-img,
+.avatar-dot.name-modal-avatar-img {
+    width: 72px !important;
+    height: 72px !important;
+    font-size: 1.75rem !important;
+}
+.avatar-picker {
+    display: flex;
+    justify-content: center;
+    gap: .75rem;
+    margin-bottom: .85rem;
+}
+.avatar-pick-btn {
+    all: unset;
+    cursor: pointer;
+    border-radius: 50%;
+    padding: 3px;
+    border: 2px solid transparent;
+    transition: border-color .15s, transform .12s;
+    line-height: 0;
+}
+.avatar-pick-btn img {
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    object-fit: cover;
+    display: block;
+    box-shadow: 0 2px 8px rgba(0,0,0,.35);
+}
+.avatar-pick-btn:hover { transform: scale(1.04); }
+.avatar-pick-btn.selected {
+    border-color: var(--gold);
+    box-shadow: 0 0 0 2px rgba(212,175,55,.25);
 }
 .name-modal-input {
     width: 100%; box-sizing: border-box;
@@ -1785,6 +1928,10 @@ html.chk-opp-first-boot #bot-cards {
     height: 52px !important;
     font-size: 1.4rem !important;
     flex-shrink: 0;
+}
+.waiting-player .avatar-img.avatar-lg {
+    width: 52px !important;
+    height: 52px !important;
 }
 .waiting-player-name {
     font-weight: 600;

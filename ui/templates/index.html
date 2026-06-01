@@ -22,6 +22,7 @@
     {% include 'partials/sound_urls.html' %}
 </head>
 <body{% if not show_start_screen %} class="session-game"{% endif %}>
+{% from 'partials/player_avatar.html' import player_avatar %}
 <div id="syncing-dot" aria-hidden="true"></div>
 
 <!-- ════════════════ HUD ════════════════ -->
@@ -31,7 +32,9 @@
     <div class="hud-scores">
         <div class="hud-score you">
             <button class="hs-label player-name-btn" id="open-name-modal" title="Change your name" aria-label="Change name">
-                <span class="avatar-dot" style="background:{{ avatar_color }}">{{ avatar_initial }}</span>
+                <span id="hud-player-avatar" class="human-avatar-slot">
+                    {{ player_avatar(avatar_initial, avatar_color, human_avatar_url|default(none), false, 'avatar-hs') }}
+                </span>
                 <span class="hs-name-text" title="{{ display_name|e }}">{{ display_name }}</span>
             </button>
             <span class="hs-val">{{ match_scores[0] }}</span>
@@ -43,7 +46,14 @@
         </div>
         {% endif %}
         <div class="hud-score bot">
-            <span class="hs-label">Bot</span>
+            <span class="hs-label opp-hs-label">
+                {% if not show_start_screen|default(false) %}
+                {% if bot_avatar_url %}{{ player_avatar('', '', bot_avatar_url, false, 'avatar-hs') }}{% endif %}
+                <span class="hs-name-text">{{ bot_name|default('Bot') }}</span>
+                {% else %}
+                <span>Bot</span>
+                {% endif %}
+            </span>
             <span class="hs-val">{{ match_scores[1] }}</span>
         </div>
     </div>
@@ -102,7 +112,9 @@
 
         <!-- Player identity — always visible on landing -->
         <div class="landing-identity">
-            <span class="avatar-dot" style="background:{{ avatar_color }}">{{ avatar_initial }}</span>
+            <span id="landing-player-avatar" class="human-avatar-slot">
+                {{ player_avatar(avatar_initial, avatar_color, human_avatar_url|default(none), false, 'avatar-hs') }}
+            </span>
             <span class="landing-player-name">{{ display_name }}</span>
             <button class="landing-name-edit" id="open-name-modal" title="Change name" aria-label="Change display name">✏</button>
         </div>
@@ -161,22 +173,29 @@
 
     <!-- ── Opponent Zone ── -->
     <div class="zone opp-zone" aria-label="Opponent zone">
-        <div class="zone-meta">
-            <span class="zone-name opp-name">
-                <span class="bot-mood" title="Bot mood">{{ bot_mood }}</span>
-                {{ bot_name }}
-            </span>
-            <span class="zone-stats"><span class="chk-star">{{ bot_chkobbas }}✦</span></span>
-            <span class="zone-status">
-                {% if opp_first_js_deal|default(false) %}
-                {% elif not human_is_current and not round_over and not has_pending_bot %}
-                    <span class="badge thinking">Thinking…</span>
-                {% elif has_pending_bot %}
-                    <span class="badge thinking">Playing…</span>
-                {% endif %}
-            </span>
-        </div>
         <div class="zone-hand-row">
+            <div class="zone-side zone-side-opp">
+                <div class="zone-identity">
+                    {% if bot_avatar_url %}
+                    <div class="zone-avatar-inline">
+                        {{ player_avatar('', '', bot_avatar_url, false, 'zone-avatar-sm') }}
+                    </div>
+                    {% endif %}
+                    <span class="zone-name opp-name">
+                        <span class="bot-mood" title="Bot mood">{{ bot_mood }}</span>
+                        <span class="zone-display-name">{{ bot_name }}</span>
+                    </span>
+                    <span class="zone-stats"><span class="chk-star">{{ bot_chkobbas }}✦</span></span>
+                    <span class="zone-status">
+                        {% if opp_first_js_deal|default(false) %}
+                        {% elif not human_is_current and not round_over and not has_pending_bot %}
+                            <span class="badge thinking">Thinking…</span>
+                        {% elif has_pending_bot %}
+                            <span class="badge thinking">Playing…</span>
+                        {% endif %}
+                    </span>
+                </div>
+            </div>
             <div class="zone-cards init-hidden" id="bot-cards">
                 {% if opp_first_js_deal|default(false) %}
                 <span class="zone-empty">No cards</span>
@@ -267,18 +286,22 @@
                     <span class="zone-empty">No cards</span>
                 {% endif %}
             </div>
-        </div>
-        <div class="zone-meta zone-meta-bottom">
-            <span class="zone-stats"><span class="chk-star">{{ human_chkobbas }}✦</span></span>
-            <span class="zone-name player-name">
-                <span class="avatar-dot" style="background:{{ avatar_color }}">{{ avatar_initial }}</span>
-                <span id="zone-display-name">{{ display_name }}</span>
-            </span>
-            <span class="zone-status">
-                {% if human_is_current and not round_over and not has_pending_bot %}
-                    <span class="badge your-turn-badge">Your turn</span>
-                {% endif %}
-            </span>
+            <div class="zone-side zone-side-player">
+                <div class="zone-identity zone-identity-player">
+                    <div class="zone-avatar-inline human-avatar-slot" id="zone-player-avatar">
+                        {{ player_avatar(avatar_initial, avatar_color, human_avatar_url|default(none), false, 'zone-avatar-sm') }}
+                    </div>
+                    <span class="zone-name player-name">
+                        <span id="zone-display-name">{{ display_name }}</span>
+                    </span>
+                    <span class="zone-stats"><span class="chk-star">{{ human_chkobbas }}✦</span></span>
+                    <span class="zone-status">
+                        {% if human_is_current and not round_over and not has_pending_bot %}
+                            <span class="badge your-turn-badge">Your turn</span>
+                        {% endif %}
+                    </span>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -287,16 +310,13 @@
          aria-labelledby="cut-choice-title"
          style="display:{% if awaiting_cut_choice|default(false) %}flex{% else %}none{% endif %};">
         <div class="cut-choice-panel">
-            <h2 id="cut-choice-title" class="cut-choice-title">The cut</h2>
+            <h2 id="cut-choice-title" class="cut-choice-title">Deck cut</h2>
             {% if awaiting_cut_choice|default(false) and is_opening_cutter|default(false) and cut_card %}
-            <p class="cut-choice-lead">You open. This is the top card of the bottom half after the cut.</p>
             <div id="cut-card-display" class="card cut-card-display {% if '♥' in cut_card or '♦' in cut_card %}red-suit{% endif %}">{{ cut_card }}</div>
             <div class="cut-choice-actions">
                 <button type="button" class="btn-deal" id="cut-keep-btn" data-keep="true">Keep in hand</button>
-                <button type="button" class="btn-deal btn-secondary" id="cut-discard-btn" data-keep="false">Place on table</button>
+                <button type="button" class="btn-deal btn-secondary" id="cut-discard-btn" data-keep="false">Put on table</button>
             </div>
-            <p class="cut-choice-rules"><strong>Keep</strong>: cut card in your hand + 2 dealt to you; opponent gets 3; 4 on the table.<br>
-            <strong>On table</strong>: cut card on the table + 3 more; you get 3; opponent gets 3.</p>
             {% elif awaiting_cut_choice|default(false) %}
             <p class="cut-choice-wait">Waiting for the dealer to reveal the cut…</p>
             {% endif %}
@@ -346,7 +366,10 @@
 
         <div class="nb-columns">
             <span>You</span>
-            <span>{{ bot_name }}</span>
+            <span class="nb-opp-col">
+                {% if bot_avatar_url %}{{ player_avatar('', '', bot_avatar_url, false, 'avatar-hs') }}{% endif %}
+                {{ bot_name }}
+            </span>
         </div>
 
         {% for row in round_breakdown %}
@@ -429,6 +452,7 @@
     "match_scores":                 match_scores,
     "bot_mood":                     bot_mood,
     "bot_name":                     bot_name,
+    "bot_avatar_url":               bot_avatar_url|default(none),
     "last_played_card":             last_played_card,
     "last_played_by":               last_played_by,
     "room_id":                      room_id,
@@ -437,6 +461,8 @@
     "display_name":                 display_name,
     "avatar_initial":               avatar_initial,
     "avatar_color":                 avatar_color,
+    "avatar_key":                   avatar_key|default(none),
+    "human_avatar_url":             human_avatar_url|default(none),
     "awaiting_cut_choice":          awaiting_cut_choice|default(false),
     "cut_card":                     cut_card|default(none),
     "is_opening_cutter":            is_opening_cutter|default(false),
@@ -1613,13 +1639,10 @@ function updateCutOverlay(st){
         _lastSeenCutCard = st.cut_card;
         var red=(/[♥♦]/).test(st.cut_card)?' red-suit':'';
         panel.innerHTML='<h2 id="cut-choice-title" class="cut-choice-title">Deck cut</h2>'+
-            '<p class="cut-choice-lead">You play first. This is the top card of the lower half after the cut.</p>'+
             '<div id="cut-card-display" class="card cut-card-display'+red+'">'+_escapeCutHtml(st.cut_card)+'</div>'+
             '<div class="cut-choice-actions">'+
             '<button type="button" class="btn-deal" id="cut-keep-btn">Keep in hand</button>'+
-            '<button type="button" class="btn-deal btn-secondary" id="cut-discard-btn">Put on table</button></div>'+
-            '<p class="cut-choice-rules"><strong>Keep</strong>: card in your hand + 2 dealt; opponent 3; 4 on table.<br>'+
-            '<strong>Table</strong>: card on table + 3 more on table; you 3; opponent 3.</p>';
+            '<button type="button" class="btn-deal btn-secondary" id="cut-discard-btn">Put on table</button></div>';
         var cd=document.getElementById('cut-card-display'); if(cd) enhance(cd);
         bindCutChoiceButtons();
     } else {
@@ -2461,7 +2484,7 @@ document.addEventListener('DOMContentLoaded', function(){
 
     var U = window.CHK_SOUND_URLS || {};
     var SOUNDS = [
-        { src: U.bg_cafe,  vol: 0.14, loop: true },
+        { src: U.bg_cafe,  vol: 0.028, loop: true },
         { src: U.bg_oud,   vol: 0.20, loop: true },
     ];
     var FX = [
@@ -2673,8 +2696,20 @@ document.addEventListener('DOMContentLoaded', function(){
 <!-- ════ Change-name modal ════ -->
 <div id="name-modal" class="name-modal-backdrop" role="dialog" aria-modal="true" aria-label="Change your name" hidden>
     <div class="name-modal-box">
-        <h2 class="name-modal-title">Your name</h2>
-        <div id="name-modal-avatar" class="name-modal-avatar" style="background:{{ avatar_color }}">{{ avatar_initial }}</div>
+        <h2 class="name-modal-title">Your profile</h2>
+        {% if player_avatar_options %}
+        <div class="avatar-picker" id="avatar-picker" role="radiogroup" aria-label="Choose avatar">
+            {% for opt in player_avatar_options %}
+            <button type="button" class="avatar-pick-btn{% if avatar_key == opt.key %} selected{% endif %}"
+                    data-key="{{ opt.key }}" aria-label="{{ opt.label }}" aria-pressed="{{ 'true' if avatar_key == opt.key else 'false' }}">
+                <img src="{{ opt.url }}" alt="">
+            </button>
+            {% endfor %}
+        </div>
+        {% endif %}
+        <div id="name-modal-avatar-preview" class="name-modal-avatar-preview human-avatar-slot">
+            {{ player_avatar(avatar_initial, avatar_color, human_avatar_url|default(none), false, 'name-modal-avatar-img') }}
+        </div>
         <input id="name-modal-input" class="name-modal-input" type="text" maxlength="30"
                placeholder="Enter a name…" autocomplete="off" spellcheck="false"
                value="{{ display_name }}" aria-label="Display name">
@@ -2692,7 +2727,56 @@ document.addEventListener('DOMContentLoaded', function(){
     var input   = document.getElementById('name-modal-input');
     var errEl   = document.getElementById('name-modal-error');
     var saveBtn = document.getElementById('name-modal-save');
-    var avatar  = document.getElementById('name-modal-avatar');
+    var preview = document.getElementById('name-modal-avatar-preview');
+    var picker  = document.getElementById('avatar-picker');
+    var selectedAvatarKey = {{ avatar_key|tojson }};
+
+    function avatarImgClassForSlot(el){
+        if(!el) return 'avatar-hs';
+        if(el.id === 'zone-player-avatar') return 'zone-avatar-sm';
+        if(el.id === 'name-modal-avatar-preview') return 'name-modal-avatar-img';
+        return 'avatar-hs';
+    }
+
+    function renderAvatarSlot(el, data){
+        if(!el) return;
+        var url = data.avatar_url;
+        var initial = data.avatar_initial || '?';
+        var color = data.avatar_color || '#888';
+        var imgCls = 'avatar-img ' + avatarImgClassForSlot(el);
+        if(url){
+            el.innerHTML = '<img class="'+imgCls+'" src="'+url+'" alt="">';
+        } else {
+            var dotCls = (el.id === 'zone-player-avatar') ? 'avatar-dot zone-avatar-sm' : 'avatar-dot avatar-hs';
+            if(el.id === 'name-modal-avatar-preview') dotCls = 'avatar-dot name-modal-avatar-img';
+            el.innerHTML = '<span class="'+dotCls+'" style="background:'+color+'">'+initial+'</span>';
+        }
+    }
+
+    function refreshHumanAvatars(data){
+        document.querySelectorAll('.human-avatar-slot').forEach(function(el){
+            renderAvatarSlot(el, data);
+        });
+    }
+
+    function syncPickerSelection(){
+        if(!picker) return;
+        picker.querySelectorAll('.avatar-pick-btn').forEach(function(btn){
+            var on = btn.dataset.key === selectedAvatarKey;
+            btn.classList.toggle('selected', on);
+            btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+        });
+    }
+
+    function previewFromSelection(name){
+        var opt = picker ? picker.querySelector('.avatar-pick-btn[data-key="'+selectedAvatarKey+'"] img') : null;
+        var data = {
+            avatar_url: opt ? opt.getAttribute('src') : null,
+            avatar_initial: (name || '?')[0].toUpperCase(),
+            avatar_color: {{ avatar_color|tojson }}
+        };
+        if(preview) renderAvatarSlot(preview, data);
+    }
 
     // A CSRF token is embedded in the page already (used by the form).
     // Re-read it from the meta tag so this script works on every page load.
@@ -2708,6 +2792,8 @@ document.addEventListener('DOMContentLoaded', function(){
                        document.querySelector('.hs-name-text') ||
                        {textContent:''}).textContent.trim();
         modal.hidden = false;
+        syncPickerSelection();
+        previewFromSelection(input.value.trim());
         input.focus();
         input.select();
     }
@@ -2716,8 +2802,18 @@ document.addEventListener('DOMContentLoaded', function(){
 
     function showError(msg){ errEl.textContent = msg; errEl.hidden = false; }
 
-    function updateAvatar(name){
-        if(avatar && name) avatar.textContent = name[0].toUpperCase();
+    function updateAvatarPreview(name){
+        previewFromSelection(name);
+    }
+
+    if(picker){
+        picker.addEventListener('click', function(e){
+            var btn = e.target.closest('.avatar-pick-btn');
+            if(!btn) return;
+            selectedAvatarKey = btn.dataset.key || null;
+            syncPickerSelection();
+            previewFromSelection((input.value || '').trim());
+        });
     }
 
     // Wire open triggers (both HUD button and landing edit button)
@@ -2739,7 +2835,7 @@ document.addEventListener('DOMContentLoaded', function(){
     });
 
     // Live avatar preview
-    if(input) input.addEventListener('input', function(){ updateAvatar(this.value); });
+    if(input) input.addEventListener('input', function(){ updateAvatarPreview(this.value); });
 
     saveBtn.addEventListener('click', function(){
         var name = (input.value || '').trim();
@@ -2750,15 +2846,20 @@ document.addEventListener('DOMContentLoaded', function(){
         fetch('/api/profile/name', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({name: name, _csrf_token: getCSRF()})
+            body: JSON.stringify({
+                name: name,
+                avatar_key: selectedAvatarKey || '',
+                _csrf_token: getCSRF()
+            })
         })
         .then(function(r){ return r.json().then(function(d){ return {ok:r.ok,data:d}; }); })
         .then(function(res){
             if(!res.ok){ showError(res.data.error || 'Failed to save.'); return; }
-            // Update every name display on the page
+            selectedAvatarKey = res.data.avatar_key || null;
             document.querySelectorAll('.hs-name-text').forEach(function(el){ el.textContent = name; el.title = name; });
             document.querySelectorAll('#zone-display-name').forEach(function(el){ el.textContent = name; });
             document.querySelectorAll('.landing-player-name').forEach(function(el){ el.textContent = name; });
+            refreshHumanAvatars(res.data);
             close();
         })
         .catch(function(){ showError('Network error — try again.'); })

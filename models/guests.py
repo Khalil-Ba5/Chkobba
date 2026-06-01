@@ -59,6 +59,20 @@ def update_display_name(guest_id: str, display_name: str) -> None:
         logger.exception("Failed to update display name for guest %s", guest_id)
 
 
+def update_avatar_key(guest_id: str, avatar_key: str | None) -> None:
+    """Persist the guest's chosen portrait key (``male`` / ``female``), or clear it."""
+    try:
+        conn = get_connection()
+        conn.execute(
+            "UPDATE guests SET avatar_key = ? WHERE guest_id = ?",
+            (avatar_key, guest_id),
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        logger.exception("Failed to update avatar for guest %s", guest_id)
+
+
 def link_guest_to_account(guest_id: str, account_id: int) -> None:
     """Set accounts.guest_id so match history survives sign-up."""
     try:
