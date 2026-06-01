@@ -312,6 +312,13 @@ def _coerce_match_pair(value: object | None) -> list[int]:
         return [0, 0]
 
 
+# Table UI: five columns left→right; column 2 is the visual center.
+# Fill priority (lower = earlier): inner pair first, then center, then outer edges.
+TABLE_COLUMN_PRIORITIES: tuple[int, ...] = (3, 1, 2, 1, 3)
+TABLE_INITIAL_COLUMNS = 5
+TABLE_INITIAL_SLOT_COUNT = TABLE_INITIAL_COLUMNS * 2
+
+
 # ---------------------------------------------------------------------------
 # In-memory game state
 # ---------------------------------------------------------------------------
@@ -481,7 +488,7 @@ class GameManager:
             return False
         self.state = new_state
         self.opening_cut_index = None
-        self.table_slots = new_state.table_cards.copy()
+        self._populate_table_slots_from_cards(new_state.table_cards)
         self.phase = GamePhase.PLAYING_HUMAN
         self.messages.append(
             "Opening deal: cut card stays in the cutter's hand."
@@ -728,8 +735,13 @@ class GameManager:
         self.bot_replacement_seat = data.get("bot_replacement_seat", None)
         self.opening_cut_index = data.get("opening_cut_index")
         self.table_slots = [card_from_data(c) if c is not None else None for c in data.get("table_slots", [])]
-        if not self.table_slots and self.state is not None:
-            self.table_slots = self.state.table_cards.copy()
+        if self.state is not None:
+            if not self.table_slots:
+                self._populate_table_slots_from_cards(list(self.state.table_cards))
+            else:
+                slot_cards = [c for c in self.table_slots if c is not None]
+                if sorted(slot_cards, key=str) != sorted(self.state.table_cards, key=str):
+                    self._populate_table_slots_from_cards(list(self.state.table_cards))
         if self.state is not None:
             self.state.match_scores = self.match_scores.copy()
 
@@ -895,21 +907,56 @@ class GameManager:
                 self.table_slots[i] = None
                 return
 
-    def _place_card_in_slots(self, card: Card, played_by: str = 'deal') -> int:
-        """Place the card in the first empty table slot, scanning in slot order.
+    @staticmethod
+    def _init_table_slots() -> list[Card | None]:
+        return [None] * TABLE_INITIAL_SLOT_COUNT
 
-        Slots are paired per column: indices ``2*j`` and ``2*j+1`` are the top and
-        bottom cells of column ``j``. Filling left-to-right fills the centered column
-        first (column 0 is centered visually when many columns are shown), then
-        outward. ``played_by`` is kept for callers but does not affect placement.
+    @staticmethod
+    def _column_fill_priority(col_index: int) -> int:
+        if col_index < len(TABLE_COLUMN_PRIORITIES):
+            return TABLE_COLUMN_PRIORITIES[col_index]
+        return 10 + col_index
+
+    def _ensure_slot_index(self, idx: int) -> None:
+        if idx >= len(self.table_slots):
+            self.table_slots.extend([None] * (idx + 1 - len(self.table_slots)))
+
+    def _first_empty_slot_by_priority(self) -> int | None:
+        """Return the empty slot index with lowest column priority (top before bottom)."""
+        num_cols = max(TABLE_INITIAL_COLUMNS, (len(self.table_slots) + 1) // 2)
+        candidates: list[tuple[int, int, int, int]] = []
+        for j in range(num_cols):
+            pri = self._column_fill_priority(j)
+            for half in (0, 1):
+                idx = 2 * j + half
+                self._ensure_slot_index(idx)
+                if self.table_slots[idx] is None:
+                    candidates.append((pri, j, half, idx))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda t: (t[0], t[1], t[2]))
+        return candidates[0][3]
+
+    def _populate_table_slots_from_cards(self, cards: list[Card]) -> None:
+        """Lay out table cards into the five-column grid using fill priority."""
+        self.table_slots = self._init_table_slots()
+        for card in cards:
+            self._place_card_in_slots(card, "deal")
+
+    def _place_card_in_slots(self, card: Card, played_by: str = 'deal') -> int:
+        """Place the card in the highest-priority empty slot (see TABLE_COLUMN_PRIORITIES).
+
+        Slots are paired per column: indices ``2*j`` and ``2*j+1`` are top/bottom of
+        column ``j`` (0 = left, 2 = center). Opening deal keeps the center column
+        empty until inner columns are filled. ``played_by`` is kept for callers.
         Returns the slot index used.
         """
-        for i, slot in enumerate(self.table_slots):
-            if slot is None:
-                self.table_slots[i] = card
-                return i
-        self.table_slots.append(card)
-        return len(self.table_slots) - 1
+        idx = self._first_empty_slot_by_priority()
+        if idx is None:
+            self.table_slots.extend([None, None])
+            idx = len(self.table_slots) - 2
+        self.table_slots[idx] = card
+        return idx
 
     def _sync_table_slots_after_move(self, move: Move, played_by: str = 'deal') -> None:
         """Update UI slots to preserve table positions across captures."""
@@ -919,10 +966,10 @@ class GameManager:
         else:
             self._place_card_in_slots(move.played_card, played_by)
 
-        # Safety: if slot cards don't match real table cards, rebuild compactly.
+        # Safety: if slot cards don't match real table cards, rebuild with column priority.
         slot_cards = [c for c in self.table_slots if c is not None]
         if self.state is not None and sorted(slot_cards, key=str) != sorted(self.state.table_cards, key=str):
-            self.table_slots = self.state.table_cards.copy()
+            self._populate_table_slots_from_cards(list(self.state.table_cards))
 
     def _is_human_turn(self, seat: int | None = None) -> bool:
         """Check if it's the specified seat's turn to move.

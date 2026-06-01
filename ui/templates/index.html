@@ -207,25 +207,26 @@
                 <p class="felt-empty">No cards on the table</p>
             {% elif table_slots and (table_slots | map(attribute='card') | select | list) %}
                 {% for i in range(0, table_slots | length, 2) %}
+                    {% set col_idx = i // 2 %}
                     {% set bot = table_slots[i] %}
                     {% set human = table_slots[i + 1] if i + 1 < (table_slots | length) else none %}
                     {% set has_bot = bot and bot.card %}
                     {% set has_human = human is not none and human.card %}
-                    {% if has_bot or has_human %}
-                    <div class="table-col">
+                    {% if col_idx < 5 or has_bot or has_human %}
+                    <div class="table-col" style="order: {{ col_idx }}">
                         {% if has_bot %}
                         <div class="card table-card {% if '♥' in bot.card or '♦' in bot.card %}red-suit{% endif %}{% if human_is_current and not round_over and not has_pending_bot %} selectable{% endif %}{% if i == last_human_played_table_index %} human-played{% endif %}{% if bot.card == last_played_card and last_played_by == 'human' %} fly-from-human{% endif %}{% if bot.card == last_played_card and last_played_by == 'bot' %} fly-from-bot{% endif %}"
                             data-table-index="{{ bot.table_index }}"
                             data-card-str="{{ bot.card }}">{{ bot.card }}</div>
                         {% else %}
-                        <div class="card table-slot-empty" aria-hidden="true"></div>
+                        <div class="card-spacer" aria-hidden="true"></div>
                         {% endif %}
                         {% if has_human %}
                         <div class="card table-card {% if '♥' in human.card or '♦' in human.card %}red-suit{% endif %}{% if human_is_current and not round_over and not has_pending_bot %} selectable{% endif %}{% if (i + 1) == last_human_played_table_index %} human-played{% endif %}{% if human.card == last_played_card and last_played_by == 'human' %} fly-from-human{% endif %}{% if human.card == last_played_card and last_played_by == 'bot' %} fly-from-bot{% endif %}"
                             data-table-index="{{ human.table_index }}"
                             data-card-str="{{ human.card }}">{{ human.card }}</div>
                         {% else %}
-                        <div class="card table-slot-empty" aria-hidden="true"></div>
+                        <div class="card-spacer" aria-hidden="true"></div>
                         {% endif %}
                     </div>
                     {% endif %}
@@ -710,14 +711,44 @@ var CAPTURE_FLY_PER_EXTRA_MS = 90;
 var CAPTURE_SYNC_PAD_MS = 80;
 
 // ── Client-side state prediction ─────────────────────────────────────────
-// Mirrors _place_card_in_slots() in app.py (first empty slot in column order).
-function _placeOptimistic(slots, card){
-    for(var i=0;i<slots.length;i++){
-        if(slots[i].card===null){
-            slots[i]={card:card, table_index:null}; return;
+// Mirrors _place_card_in_slots() in app.py — column fill priority [3,1,2,1,3].
+var TABLE_COLUMN_PRIORITIES = [3, 1, 2, 1, 3];
+var TABLE_INITIAL_COLUMNS = 5;
+
+function _columnFillPriority(j){
+    return j < TABLE_COLUMN_PRIORITIES.length ? TABLE_COLUMN_PRIORITIES[j] : (10 + j);
+}
+function _ensureSlotObjects(slots, idx){
+    while(slots.length <= idx) slots.push({card:null, table_index:null});
+}
+function _firstEmptySlotByPriority(slots){
+    var numCols = Math.max(TABLE_INITIAL_COLUMNS, Math.ceil(slots.length / 2));
+    var candidates = [];
+    for(var j=0; j<numCols; j++){
+        var pri = _columnFillPriority(j);
+        for(var half=0; half<2; half++){
+            var idx = 2*j + half;
+            _ensureSlotObjects(slots, idx);
+            if(slots[idx].card === null){
+                candidates.push({pri:pri, col:j, half:half, idx:idx});
+            }
         }
     }
-    slots.push({card:card, table_index:null});
+    if(!candidates.length) return null;
+    candidates.sort(function(a,b){
+        if(a.pri !== b.pri) return a.pri - b.pri;
+        if(a.col !== b.col) return a.col - b.col;
+        return a.half - b.half;
+    });
+    return candidates[0].idx;
+}
+function _placeOptimistic(slots, card){
+    var idx = _firstEmptySlotByPriority(slots);
+    if(idx === null){
+        slots.push({card:card, table_index:null}, {card:null, table_index:null});
+        return;
+    }
+    slots[idx] = {card:card, table_index:null};
 }
 
 // Build a predicted copy of _state after the human plays handIdx → tableIdxs.
@@ -1398,13 +1429,12 @@ function buildHand(cards, canSelect){
     }).join('');
 }
 
-// Stable order: first pair center (0), then alternate left↔right (-1,+1,-2,+2,…)
-function _pairOrder(i){
-    if(i===0) return 0;
-    return (i%2===1?-1:1)*Math.ceil(i/2);
+// Left-to-right column order (column 2 = visual center).
+function _columnVisualOrder(j){
+    return j;
 }
 
-// Build table HTML: each pair is a column with stable CSS order; empty→spacer
+// Build table HTML: five columns left→right; empty slots → spacer
 function _flyClass(cardStr, lastCard, lastBy){
     if(!cardStr || cardStr!==lastCard) return '';
     return lastBy==='bot'?' fly-from-bot':' fly-from-human';
@@ -1419,15 +1449,18 @@ function _slotHtml(slot, sel, lastCard, lastBy){
 
 function buildTable(slots, sel, lastCard, lastBy){
     if(!slots) return '<p class="felt-empty">No cards on the table</p>';
-    var hasSome = slots.some(function(s){return s.card;});
+    var hasSome = slots.some(function(s){return s && s.card;});
     if(!hasSome) return '<p class="felt-empty">No cards on the table</p>';
     var html='';
     for(var i=0; i<slots.length; i+=2){
-        var order=_pairOrder(Math.floor(i/2));
-        html+='<div class="table-col" style="order:'+order+'">';
-        html+=_slotHtml(slots[i], sel, lastCard, lastBy);
-        html+=_slotHtml(slots[i+1], sel, lastCard, lastBy);
-        html+='</div>';
+        var colIdx = Math.floor(i/2);
+        var hasCol = (slots[i] && slots[i].card) || (slots[i+1] && slots[i+1].card);
+        if(colIdx < TABLE_INITIAL_COLUMNS || hasCol){
+            html+='<div class="table-col" style="order:'+_columnVisualOrder(colIdx)+'">';
+            html+=_slotHtml(slots[i], sel, lastCard, lastBy);
+            html+=_slotHtml(slots[i+1], sel, lastCard, lastBy);
+            html+='</div>';
+        }
     }
     return html;
 }
