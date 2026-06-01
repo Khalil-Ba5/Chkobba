@@ -17,6 +17,7 @@
     <meta name="csrf-token" content="{{ csrf_token() }}">
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js" crossorigin="anonymous" integrity="sha384-2huaZvOR9iDzHqslqwpR87isEmrfxqyWOF7hr7BY6KG0+hVKLoEXMPUJw3ynWuhO"></script>
     <script src="{{ static_url('js/socket-client.js') }}"></script>
+    {% include 'partials/sound_urls.html' %}
 </head>
 <body{% if not room_not_found and not room_full %} class="session-game"{% endif %}>
 <div id="syncing-dot" aria-hidden="true"></div>
@@ -52,6 +53,7 @@
 
     <nav class="hud-nav">
         <span class="conn-dot" title="Connection status" aria-hidden="true"></span>
+        <span id="conn-status-text" class="sr-only" aria-live="polite"></span>
         <a href="{{ url_for('index') }}"  class="hud-btn">Home</a>
         <a href="{{ url_for('lobby') }}"  class="hud-btn">Lobby</a>
         <a href="{{ url_for('history') }}" class="hud-btn">History</a>
@@ -229,8 +231,12 @@
                 {% if opp_first_js_deal|default(false) %}
                 <span class="zone-empty">No cards</span>
                 {% else %}
-                {% for _ in range(bot_hand_count) %}<div class="card card-back"></div>{% endfor %}
-                {% if bot_hand_count == 0 and game_active %}<span class="zone-empty">No cards</span>{% endif %}
+                {% set hidden_count = (bot_hand_count - 1) if (has_pending_bot and pending_bot_played_card) else bot_hand_count %}
+                {% for _ in range([hidden_count, 0] | max) %}<div class="card card-back"></div>{% endfor %}
+                {% if has_pending_bot and pending_bot_played_card %}
+                    <div class="card bot-capture-card {% if '♥' in pending_bot_played_card or '♦' in pending_bot_played_card %}red-suit{% endif %}">{{ pending_bot_played_card }}</div>
+                {% endif %}
+                {% if bot_hand_count == 0 and not has_pending_bot and game_active %}<span class="zone-empty">No cards</span>{% endif %}
                 {% endif %}
             </div>
             {% set cap_layers = 5 if bot_captured_count >= 20 else (4 if bot_captured_count >= 12 else (3 if bot_captured_count >= 5 else (2 if bot_captured_count >= 2 else (1 if bot_captured_count >= 1 else 0)))) %}
@@ -304,7 +310,7 @@
                 {% elif human_hand %}
                     {% for card in human_hand %}
                     <div class="card hand-card {% if '♥' in card or '♦' in card %}red-suit{% endif %}{% if human_is_current and not round_over and not has_pending_bot %} selectable{% endif %}"
-                        data-hand-index="{{ loop.index0 }}">{{ card }}</div>
+                        data-hand-index="{{ loop.index0 }}" data-card-str="{{ card }}">{{ card }}</div>
                     {% endfor %}
                 {% elif game_active %}
                     <span class="zone-empty">No cards</span>
@@ -471,6 +477,7 @@
     "bot_captured_count":           bot_captured_count,
     "bot_chkobbas":                 bot_chkobbas,
     "deck_remaining":               deck_remaining,
+    "round_moves_played":           round_moves_played|default(0),
     "match_scores":                 match_scores,
     "bot_mood":                     bot_mood,
     "bot_name":                     bot_name,
@@ -495,10 +502,12 @@
 <script>
 (function(){
     function enhance(el){
+        if(el.querySelector('.c-tl')) return; // already enhanced
         var t=el.textContent.trim();
         if(!t||el.classList.contains('card-back')||el.classList.contains('table-slot-empty'))return;
         var suit=t.slice(-1),rank=t.slice(0,-1);
         if(!rank)return;
+        el.dataset.cardStr = t;
         el.innerHTML='<span class="c-tl">'+rank+'<br>'+suit+'</span>'
                     +'<span class="c-ctr">'+suit+'</span>'
                     +'<span class="c-br">'+rank+'<br>'+suit+'</span>';
@@ -533,7 +542,7 @@
             var size=3+Math.random()*7, angle=Math.random()*Math.PI*2;
             var speed=55+Math.random()*130, vx=Math.cos(angle)*speed, vy=Math.sin(angle)*speed-55;
             var col=GOLD_COLORS[Math.floor(Math.random()*GOLD_COLORS.length)];
-            var dur=700+Math.random()*500;
+            var dur=400+Math.random()*400;
             p.style.cssText='width:'+size+'px;height:'+size+'px;background:'+col+';';
             document.body.appendChild(p);
             var start=null;
@@ -557,22 +566,58 @@
         requestAnimationFrame(function(){
             el.style.transition='transform 200ms cubic-bezier(.2,1.5,.4,1)';
             el.style.transform='translate(-50%,-50%) scale(1)';
-            setTimeout(function(){
-                el.style.transition='opacity 300ms ease'; el.style.opacity='0';
-                setTimeout(function(){if(el.parentNode)el.parentNode.removeChild(el);},310);
-            },600);
+                setTimeout(function(){
+                    el.style.transition='opacity 300ms ease'; el.style.opacity='0';
+                    setTimeout(function(){if(el.parentNode)el.parentNode.removeChild(el);},310);
+                },300);
         });
     }
     function playTakSound(){
-        try{var a=new Audio('/static/sounds/tak.mp3');a.volume=0.5;a.onerror=function(){};a.play().catch(function(){});}catch(e){}
+        try{var a=_chkAudio('tak',0.5);if(a)a.play().catch(function(){});}catch(e){}
     }
+    window.playCardPlaySound = function(){
+        try{var a=_chkAudio('play',0.4);if(a)a.play().catch(function(){});}catch(e){}
+    };
+    window.playCardCaptureSound = function(){
+        try{var a=_chkAudio('capture',0.35);if(a)a.play().catch(function(){});}catch(e){}
+    };
+    var _deferredAudios = [];
+    function _flushDeferred(){
+        document.removeEventListener('click', _flushDeferred);
+        document.removeEventListener('touchstart', _flushDeferred);
+        document.removeEventListener('keydown', _flushDeferred);
+        _deferredAudios.forEach(function(a){ a.play().catch(function(){}); });
+        _deferredAudios = [];
+    }
+    document.addEventListener('click', _flushDeferred);
+    document.addEventListener('touchstart', _flushDeferred);
+    document.addEventListener('keydown', _flushDeferred);
+
+    window.playCardDealStartSound = function(){
+        try{
+            var count = 0, max = 2;
+            var a = _chkAudio('dealing_middle', 0.25);
+            if(!a) return;
+            a.onerror = function(){};
+            a.onended = function(){
+                if(++count < max){ a.currentTime = 0; a.play().catch(function(){}); }
+            };
+            a.play().catch(function(){ _deferredAudios.push(a); });
+        }catch(e){}
+    };
+    window.playCardDealMiddleSound = function(){
+        try{var a=_chkAudio('dealing_middle',0.25);if(a)a.play().catch(function(){});}catch(e){}
+    };
+    window.playCardFlipSound = function(){
+        try{var a=_chkAudio('play',0.3);if(a)a.play().catch(function(){});}catch(e){}
+    };
     window.chkobbaAnimation=function(centerEl,onComplete){
         var r=(typeof centerEl.getBoundingClientRect==='function')?centerEl.getBoundingClientRect():centerEl;
         var cx=r.left+r.width/2, cy=r.top+r.height/2;
         var felt=document.querySelector('.felt');
         if(felt){felt.classList.add('chkobba-flash');setTimeout(function(){felt.classList.remove('chkobba-flash');},500);}
         spawnParticles(cx,cy); showChkobbaText(cx,cy); playTakSound();
-        setTimeout(onComplete,1200);
+        setTimeout(onComplete,800);
     };
 })();
 </script>
@@ -583,7 +628,7 @@
 'use strict';
 
 var EASE='cubic-bezier(0.22,1,0.36,1)';
-var DEAL_ANIM_MULT=2.35;
+var DEAL_ANIM_MULT=3.0;
 function dealMs(x){ return Math.max(32, Math.round(x/DEAL_ANIM_MULT)); }
 var CSRF=(document.querySelector('meta[name="csrf-token"]')||{}).getAttribute('content')||'';
 function oppPlayingMsg(n){ return (n||'Opponent')+' is playing…'; }
@@ -592,13 +637,93 @@ var _busy=false;
 var _state=null;
 var _pendingCaptureEls=null;
 var _pendingCaptureRects=null;
+var _pendingCaptureHandEl=null;
+var _pendingCaptureHandRect=null;
 var _prevHumanHandLen=0;
 var _prevBotHandCount=0;
 var _prevDeckRemaining=0;
 var _prevHumanHand=[];
 var _prevAwaitingCutChoice=false;
 var _isDealing=false;
+var _botMoveCommitted=true;
+var _domFp={table:'',hand:'',bot:'',tableSel:false,handSel:false};
+
+function _fpTable(st){
+    return (st.table_slots||[]).map(function(s){
+        return String(s.table_index!=null?s.table_index:'')+':'+(s.card||'');
+    }).join('|');
+}
+function _fpHand(st){ return (st.human_hand||[]).join('\n'); }
+function _fpBot(st){
+    return (st.bot_hand_count||0)+'/'+(st.has_pending_bot?1:0)+'/'+(st.pending_bot_played_card||'');
+}
+function _resetDomFp(){ _domFp={table:'',hand:'',bot:'',tableSel:false,handSel:false}; }
+
+function _applyHandSelectability(canSelect){
+    var hc=document.getElementById('hand-cards');
+    if(!hc) return;
+    hc.querySelectorAll('.hand-card').forEach(function(c){
+        c.classList.toggle('selectable', !!canSelect);
+    });
+    _domFp.handSel=!!canSelect;
+}
+
+function _syncGameDom(st,human,snap){
+    if(_isDealing || _botAnimating) return;
+    var tc=document.getElementById('table-cards');
+    var hc=document.getElementById('hand-cards');
+    var bc=document.getElementById('bot-cards');
+    if(bc && !st.has_pending_bot && st.last_played_by==='bot' && snap && snap.bot){
+        var _hidePending=bc.querySelector('.bot-capture-card');
+        if(_hidePending) _hidePending.style.visibility='hidden';
+    }
+    var tFp=_fpTable(st);
+    if(tc&&(tFp!==_domFp.table||human!==_domFp.tableSel)){
+        if(tFp===_domFp.table&&human!==_domFp.tableSel){
+            tc.querySelectorAll('.table-card:not(.table-slot-empty)').forEach(function(c){
+                c.classList.toggle('selectable',!!human);
+            });
+        }else{
+            tc.innerHTML=buildTable(st.table_slots,human,st.last_played_card,st.last_played_by);
+            tc.querySelectorAll('.table-card:not(.table-slot-empty)').forEach(enhance);
+            scatterAndFlip(tc,snap||null);
+            _domFp.table=tFp;
+        }
+        _domFp.tableSel=human;
+    }
+    var hFp=_fpHand(st);
+    if(hc&&hFp!==_domFp.hand){
+        hc.innerHTML=buildHand(st.human_hand, human);
+        hc.querySelectorAll('.hand-card').forEach(enhance);
+        _domFp.hand=hFp;
+        _domFp.handSel=human;
+    } else if(hc&&human!==_domFp.handSel){
+        hc.querySelectorAll('.hand-card').forEach(function(c){
+            c.classList.toggle('selectable', !!human);
+        });
+        _domFp.handSel=human;
+    }
+    var bFp=_fpBot(st);
+    if(bc&&bFp!==_domFp.bot){
+        if(st.has_pending_bot){
+            bc.innerHTML=buildBotHand(st.bot_hand_count,true,st.pending_bot_played_card);
+            var bcc=bc.querySelector('.bot-capture-card'); if(bcc) enhance(bcc);
+        }else{
+            bc.innerHTML=buildBotHand(st.bot_hand_count,false,null);
+        }
+        _domFp.bot=bFp;
+    }
+}
 var _lastSeenCutCard=null;
+var _pendingBotSnap=null;
+
+function _useSocket(){
+    return !!(window.Game && window.Game.socket && window.Game.socket.connected);
+}
+
+var CAPTURE_FLY_BASE_MS = 600;
+var CAPTURE_FLY_PER_EXTRA_MS = 90;
+var CAPTURE_SYNC_PAD_MS = 80;
 
 function _placeOptimistic(slots,card){
     for(var i=0;i<slots.length;i++){
@@ -654,34 +779,91 @@ function statesMatch(pred,srv){
 }
 
 function reconcile(serverState){
-    var sels=['#hand-cards','#table-cards','.player-zone .zone-stats'];
-    var els=sels.map(function(s){return document.querySelector(s);}).filter(Boolean);
-    els.forEach(function(el){el.style.transition='opacity .2s';el.style.opacity='0.5';});
-    setTimeout(function(){
-        els.forEach(function(el){el.style.opacity='';el.style.transition='';});
-        applyState(serverState,null);
-    },200);
+    applyState(serverState,null);
 }
 
 function onServerConfirm(serverState){
+    if(_isDealing || _botAnimating){ _state = serverState; return; }
     if(serverState.commentary_toast&&window.showCommentaryToast)
         window.showCommentaryToast(serverState.commentary_toast);
     if(!serverState.has_pending_bot) return;
-    var bc=document.getElementById('bot-cards');
-    if(bc){
-        bc.innerHTML=buildBotHand(serverState.bot_hand_count,true,serverState.pending_bot_played_card);
-        var bcc=bc.querySelector('.bot-capture-card'); if(bcc) enhance(bcc);
-    }
+    _state=serverState;
+    _syncGameDom(serverState,false,null);
     var hint=document.getElementById('selection-hint');
     if(hint) hint.textContent=oppPlayingMsg(serverState.bot_name);
     var bSt=document.querySelector('.opp-zone .zone-status');
     if(bSt) bSt.innerHTML='<span class="badge thinking">Playing…</span>';
-    scheduleBotTurn(serverState);
+    var _snapBc=document.querySelector('.bot-capture-card');
+    if(_snapBc) _pendingBotSnap=takeSnap(_snapBc,true);
+    if(serverState.pending_bot_is_capture && !_useSocket()) animateBotCapture(serverState);
+}
+
+function _applyHudOnly(st, human, oppName){
+    var board=document.querySelector('.board');
+    if(board){board.classList.toggle('player-active',human);board.classList.toggle('bot-active',!human);}
+    var hudY=document.querySelector('.hud-score.you .hs-val');
+    var hudB=document.querySelector('.hud-score.bot .hs-val');
+    if(hudY) hudY.textContent=st.match_scores[0];
+    if(hudB) hudB.textContent=st.match_scores[1];
+    var moodEl=document.querySelector('.bot-mood');
+    if(moodEl) moodEl.textContent=st.bot_mood;
+    var dCount=document.querySelector('.deck-count');
+    if(dCount) dCount.textContent=st.deck_remaining;
+    var dStack=document.querySelector('.deck-stack');
+    if(dStack){
+        var dr=st.deck_remaining||0;
+        dStack.style.display=dr>0?'':'none';
+        var layers=dr>=20?5:dr>=12?4:dr>=6?3:dr>=2?2:1;
+        while(dStack.querySelectorAll('.pile-card').length>layers){
+            var last=dStack.querySelector('.pile-card:last-of-type');
+            if(last) dStack.removeChild(last); else break;
+        }
+        while(dStack.querySelectorAll('.pile-card').length<layers){
+            var c=document.createElement('div');
+            c.className='card card-back pile-card';
+            dStack.insertBefore(c,dStack.querySelector('.pile-card'));
+        }
+    }
+    updateTurnAnnounce(st, human, oppName);
 }
 
 var _dot=document.getElementById('syncing-dot');
 function showSync(){if(_dot) _dot.classList.add('active');}
 function hideSync(){if(_dot) _dot.classList.remove('active');}
+function clearPlayBusy(){ _busy = false; hideSync(); }
+
+function _cardStrFromHandEl(el){
+    if(!el) return null;
+    if(el.dataset.cardStr) return el.dataset.cardStr;
+    var t = el.textContent.replace(/\s+/g,'').trim();
+    return (t && t.length >= 2) ? t : null;
+}
+function _resolveHandPlay(handIdx, fromEl){
+    var idx = parseInt(handIdx, 10);
+    if(isNaN(idx)) idx = 0;
+    var cardStr = _cardStrFromHandEl(fromEl);
+    if(!cardStr && _state && _state.human_hand && _state.human_hand[idx])
+        cardStr = _state.human_hand[idx];
+    if(cardStr && _state && _state.human_hand){
+        var found = _state.human_hand.indexOf(cardStr);
+        if(found >= 0) idx = found;
+    }
+    return { index: idx, cardStr: cardStr };
+}
+function _stateHandIdxFromEl(el){
+    return _resolveHandPlay(el && el.dataset.handIndex, el).index;
+}
+function _canHumanPlay(){
+    return !!(_state && _state.human_is_current && !_state.has_pending_bot &&
+              !_state.round_over && !_state.match_over && !_state.awaiting_cut_choice &&
+              !_isDealing && !_botAnimating && !_busy);
+}
+function _captureOptsForHand(handIdx, handEl){
+    var map = (_state && _state.capture_map) || {};
+    var idx = handEl != null ? _resolveHandPlay(handIdx, handEl).index : parseInt(handIdx, 10);
+    if(isNaN(idx)) idx = 0;
+    return map[idx] || map[String(idx)] || [];
+}
 
 function isRed(card){return card&&(card.indexOf('♥')>=0||card.indexOf('♦')>=0);}
 
@@ -704,18 +886,20 @@ function getDeckFlyOrigin(){
 }
 
 function pileFlyDurationMs(base, n){
-    base = base || 600;
+    base = base || CAPTURE_FLY_BASE_MS;
     n = n || 0;
     if(n <= 1) return base;
-    return Math.max(base, 720 + (n - 1) * 100);
+    return Math.max(base, base + 120 + (n - 1) * CAPTURE_FLY_PER_EXTRA_MS);
 }
 function rectObj(r){return{left:r.left,top:r.top,width:r.width,height:r.height};}
 
 function enhance(el){
+    if(el.querySelector('.c-tl')) return; // already enhanced
     var t=el.textContent.trim();
     if(!t||el.classList.contains('card-back')||el.classList.contains('table-slot-empty'))return;
     var suit=t.slice(-1),rank=t.slice(0,-1);
     if(!rank)return;
+    el.dataset.cardStr = t;
     el.innerHTML='<span class="c-tl">'+rank+'<br>'+suit+'</span>'
                +'<span class="c-ctr">'+suit+'</span>'
                +'<span class="c-br">'+rank+'<br>'+suit+'</span>';
@@ -732,11 +916,12 @@ function apiPost(url,data){
         .finally(function(){_busy=false;hideSync();});
 }
 
-function buildHand(cards,sel){
+function buildHand(cards, canSelect){
     if(!cards||!cards.length) return '<span class="zone-empty">No cards</span>';
+    var sel=canSelect?' selectable':'';
     return cards.map(function(c,i){
-        return '<div class="card hand-card'+(isRed(c)?' red-suit':'')+(sel?' selectable':'')+
-               '" data-hand-index="'+i+'">'+c+'</div>';
+        return '<div class="card hand-card'+sel+(isRed(c)?' red-suit':'')+
+               '" data-hand-index="'+i+'" data-card-str="'+c+'">'+c+'</div>';
     }).join('');
 }
 
@@ -745,34 +930,27 @@ function _pairOrder(i){
     return (i%2===1?-1:1)*Math.ceil(i/2);
 }
 
+function _flyClass(cardStr,lastCard,lastBy){
+    if(!cardStr||cardStr!==lastCard) return '';
+    return lastBy==='bot'?' fly-from-bot':' fly-from-human';
+}
+function _slotHtml(slot,sel,lastCard,lastBy){
+    if(!slot||!slot.card) return '<div class="card-spacer"></div>';
+    var fly=_flyClass(slot.card,lastCard,lastBy);
+    var ti=(slot.table_index!=null)?slot.table_index:'';
+    return '<div class="card table-card'+(isRed(slot.card)?' red-suit':'')+' selectable'+fly+
+          '" data-table-index="'+ti+'" data-card-str="'+slot.card+'">'+slot.card+'</div>';
+}
 function buildTable(slots,sel,lastCard,lastBy){
     if(!slots) return '<p class="felt-empty">No cards on the table</p>';
     var hasSome=slots.some(function(s){return s.card;});
     if(!hasSome) return '<p class="felt-empty">No cards on the table</p>';
     var html='';
     for(var i=0; i<slots.length; i+=2){
-        var bot=slots[i];
-        var human=slots[i+1];
-        var hasBot=bot&&bot.card;
-        var hasHuman=human&&human.card;
         var order=_pairOrder(Math.floor(i/2));
         html+='<div class="table-col" style="order:'+order+'">';
-        if(hasBot){
-            var fly=(bot.card===lastCard&&lastBy==='bot')?' fly-from-bot':'';
-            var ti=(bot.table_index!=null)?bot.table_index:'';
-            html+='<div class="card table-card'+(isRed(bot.card)?' red-suit':'')+(sel?' selectable':'')+fly+
-                  '" data-table-index="'+ti+'" data-card-str="'+bot.card+'">'+bot.card+'</div>';
-        } else {
-            html+='<div class="card-spacer"></div>';
-        }
-        if(hasHuman){
-            var fly=(human.card===lastCard&&lastBy==='human')?' fly-from-human':'';
-            var ti=(human.table_index!=null)?human.table_index:'';
-            html+='<div class="card table-card'+(isRed(human.card)?' red-suit':'')+(sel?' selectable':'')+fly+
-                  '" data-table-index="'+ti+'" data-card-str="'+human.card+'">'+human.card+'</div>';
-        } else {
-            html+='<div class="card-spacer"></div>';
-        }
+        html+=_slotHtml(slots[i],sel,lastCard,lastBy);
+        html+=_slotHtml(slots[i+1],sel,lastCard,lastBy);
         html+='</div>';
     }
     return html;
@@ -842,9 +1020,16 @@ function scatterAndFlip(container,snap){
         c.style.setProperty('--tx',((Math.floor(h/17)%19)-9).toFixed(1)+'px');
         c.style.setProperty('--ty',(yb+((Math.floor(h/31)%9)-4)).toFixed(1)+'px');
     });
-    if(!snap) return;
+    if(!snap){
+        var appearCard=container.querySelector('.fly-from-human,.fly-from-bot');
+        if(appearCard) appearCard.style.animation='cardAppear .25s ease';
+        return;
+    }
     var newCard=container.querySelector('.fly-from-human,.fly-from-bot');
     var fromBot=newCard&&newCard.classList.contains('fly-from-bot');
+    if(newCard){
+        newCard.classList.remove('fly-from-human','fly-from-bot');
+    }
     var fromRect=fromBot?snap.bot:snap.played;
     var toAnim=[];
     cards.forEach(function(c){
@@ -884,7 +1069,7 @@ function scatterAndFlip(container,snap){
 
 // Animate captured cards from table to a capture pile (human or bot)
 function flyToPile(elements, targetSelector, duration, rects){
-    duration = duration || 600;
+    duration = duration || CAPTURE_FLY_BASE_MS;
     var n = elements && elements.length ? elements.length : 0;
     if(n > 1) duration = pileFlyDurationMs(duration, n);
     var target = document.querySelector(targetSelector);
@@ -953,7 +1138,7 @@ function applyRoundOverPanel(st){
 }
 
 // ── Deal animation: cards fly one-by-one from the deck to each hand ────────
-function animateDeal(st, onDone){
+function animateDeal(st, onDone, includeTableCards){
     requestAnimationFrame(function(){
         requestAnimationFrame(function(){
             var o=getDeckFlyOrigin();
@@ -964,12 +1149,21 @@ function animateDeal(st, onDone){
             var botPendingCard=document.querySelector('#bot-cards .bot-capture-card');
 
             var seq=[];
+            if(includeTableCards){
+                var tableCards=Array.from(document.querySelectorAll('#table-cards .table-card:not(.table-slot-empty)'));
+                tableCards.forEach(function(el){ seq.push({el: el, isBot: false}); });
+            }
             var maxLen=Math.max(botCards.length, humanCards.length);
             for(var i=0; i<maxLen; i++){
                 if(botCards[i]) seq.push({el: botCards[i], isBot: true});
                 if(humanCards[i]) seq.push({el: humanCards[i], isBot: false});
             }
-            if(!seq.length){ if(onDone) onDone(); return; }
+            if(!seq.length){
+                document.querySelectorAll('#table-cards .table-card:not(.table-slot-empty), #hand-cards .hand-card, #bot-cards .card:not(.bot-capture-card)').forEach(function(c){ c.style.visibility = ''; });
+                if(botPendingCard) botPendingCard.style.visibility = 'visible';
+                if(onDone) onDone();
+                return;
+            }
             if(botPendingCard) botPendingCard.style.visibility='hidden';
 
             seq.forEach(function(item){ item.el.style.visibility='hidden'; });
@@ -1005,32 +1199,14 @@ function animateDeal(st, onDone){
                     setTimeout(function(){
                         if(clone.parentNode) clone.parentNode.removeChild(clone);
                         item.el.style.visibility='visible';
-                    }, dealMs(500));
+                    }, dealMs(500)+40);
                 }, idx * dealMs(250));
             });
-            var lastEnd = seq.length ? (seq.length - 1) * dealMs(250) + dealMs(500) + 80 : 0;
+            var lastEnd = seq.length ? (seq.length - 1) * dealMs(250) + dealMs(500) + 120 : 0;
             setTimeout(function(){
-                if(botPendingCard) botPendingCard.style.visibility='';
+                if(botPendingCard) botPendingCard.style.visibility = 'visible';
                 if(onDone) onDone();
             }, lastEnd);
-        });
-    });
-}
-
-function animateOppFirstFullDeal(st, onDone){
-    requestAnimationFrame(function(){
-        requestAnimationFrame(function(){
-            var tableEls=Array.from(document.querySelectorAll('#table-cards .table-card:not(.table-slot-empty)'));
-            var DUR=dealMs(520);
-            var TSTAG=dealMs(150);
-            var i;
-            for(i=0;i<tableEls.length;i++){
-                flyFromDeckToEl(tableEls[i], i*TSTAG, { dur: DUR, rot: (i%2?5:-5) });
-            }
-            var tableDone=tableEls.length?(tableEls.length-1)*TSTAG+DUR+dealMs(90):0;
-            setTimeout(function(){
-                animateDeal(st, onDone);
-            }, tableDone);
         });
     });
 }
@@ -1064,6 +1240,7 @@ function flyFromDeckToEl(el, delayMs, opts){
 }
 
 function animateOpeningDealSequenced(st, kind, cutStr, onDone){
+    window.playCardDealStartSound();
     var DUR=dealMs(520), STAG=dealMs(260), GAP=dealMs(160);
     var humanCards=Array.from(document.querySelectorAll('#hand-cards .hand-card'));
     var botCards=Array.from(document.querySelectorAll('#bot-cards .card:not(.bot-capture-card)'));
@@ -1159,6 +1336,213 @@ function animateDrawCards(selector, indices){
     });
 }
 
+// ── Shared bot capture animation (solo / bot replacement) ─────────────────
+var _botCaptureTimer = null;
+var _botAnimating = false;
+var OPP_CAPTURE_REVEAL_MS = 400;
+var CHKOBBA_ANIM_MS = 800;
+
+function _finishBotCaptureSync(force){
+    _botAnimating = false;
+    _botCaptureTimer = null;
+    _isDealing = false;
+    if(!_state) return;
+    if(!force && _useSocket() && _state.has_pending_bot) return;
+    _botMoveCommitted = true;
+    var human = !!(_state.human_is_current && !_state.round_over && !_state.has_pending_bot);
+    var oppName = _state.bot_name || 'Opponent';
+    _syncGameDom(_state, human, _pendingBotSnap || null);
+    if(!_state.has_pending_bot) _pendingBotSnap = null;
+    _domFp.table = _fpTable(_state);
+    _domFp.hand = _fpHand(_state);
+    _domFp.bot = _fpBot(_state);
+    _domFp.tableSel = human;
+    _domFp.handSel = human;
+    updateTurnAnnounce(_state, human, oppName);
+    if(human && !_state.awaiting_cut_choice) attachListeners(_state.capture_map);
+    else if(!human) _clearSelectionUI();
+}
+
+function _onDealAnimationDone(fallbackSt, scheduleBotAjax){
+    _isDealing = false;
+    document.documentElement.classList.remove('chk-opp-first-boot');
+    var live = _state || fallbackSt;
+    if(!live) return;
+    var oppName = live.bot_name || 'Opponent';
+    var humanTurn = !!(live.human_is_current && !live.has_pending_bot &&
+                       !live.round_over && !live.awaiting_cut_choice);
+    _applyHandSelectability(humanTurn);
+    var _bccDone = document.querySelector('#bot-cards .bot-capture-card');
+    if(_bccDone && live.has_pending_bot){
+        _bccDone.style.visibility = 'visible';
+        _pendingBotSnap = takeSnap(_bccDone, true);
+    }
+    var hintEl = document.getElementById('selection-hint');
+    if(hintEl && !live.awaiting_cut_choice){
+        if(live.has_pending_bot) hintEl.textContent = oppPlayingMsg(oppName);
+        else hintEl.textContent = live.human_is_current ? 'Tap a card in your hand to play' : oppThinkMsg(oppName);
+    }
+    var bStEl = document.querySelector('.opp-zone .zone-status');
+    if(bStEl && !live.awaiting_cut_choice){
+        if(live.has_pending_bot) bStEl.innerHTML = '<span class="badge thinking">Playing…</span>';
+        else if(!live.human_is_current) bStEl.innerHTML = '<span class="badge thinking">Thinking…</span>';
+        else bStEl.innerHTML = '';
+    }
+    setTimeout(function(){
+        var cur = _state || fallbackSt;
+        if(!cur) return;
+        var useSocket = !!(window.Game && window.Game.socket && window.Game.socket.connected);
+        if(cur.has_pending_bot && cur.pending_bot_is_capture){
+            if(!useSocket) animateBotCapture(cur);
+        } else if(!cur.has_pending_bot){
+            _finishBotCaptureSync(true);
+        } else if(cur.has_pending_bot && scheduleBotAjax && !useSocket){
+            scheduleBotTurn(cur);
+        }
+    }, 200);
+}
+
+function animateBotCapture(st){
+    if(_botCaptureTimer) return;
+    st = st || _state;
+    if(!st || !st.has_pending_bot || !st.pending_bot_is_capture){
+        if(_state && !_state.has_pending_bot) _finishBotCaptureSync();
+        return;
+    }
+    _botAnimating = true;
+    var bc = document.querySelector('.bot-capture-card');
+    if(bc) bc.style.visibility = '';
+    var capEls = (st.pending_bot_captured_indices||[]).map(function(ci){
+        return document.querySelector('[data-table-index="'+ci+'"]');
+    }).filter(Boolean);
+    if(!capEls.length){
+        capEls = Array.from(document.querySelectorAll('#table-cards .table-card:not(.table-slot-empty)'));
+    }
+
+    function runBotCapture(){
+        if(st.pending_bot_is_chkobba && window.chkobbaAnimation){
+            capEls.forEach(function(e){ e.classList.add('chkobba-glow'); });
+            if(window.showCommentaryToast && window.toastsEnabled && window.toastsEnabled())
+                window.showCommentaryToast('Mabrouk! \uD83C\uDF89');
+            var felt = document.querySelector('.felt-cards') || document.querySelector('.felt');
+            setTimeout(function(){
+                window.chkobbaAnimation(felt || document.body, function(){
+                    _finishBotCaptureSync();
+                });
+            }, 200);
+            _botCaptureTimer = -1;
+        } else {
+            window.playCardCaptureSound();
+            capEls.forEach(function(e){ e.classList.add('capture-flash'); });
+            var flyEls = capEls.slice();
+            if(bc) flyEls.push(bc);
+            var flyMs = pileFlyDurationMs(CAPTURE_FLY_BASE_MS, flyEls.length);
+            flyToPile(flyEls, '#bot-cap', flyMs);
+            _botCaptureTimer = setTimeout(function(){ _finishBotCaptureSync(true); }, OPP_CAPTURE_REVEAL_MS + flyMs + CAPTURE_SYNC_PAD_MS);
+        }
+    }
+
+    _botCaptureTimer = setTimeout(runBotCapture, OPP_CAPTURE_REVEAL_MS);
+}
+
+function runSocketCaptureFly(data){
+    if(!data || typeof data.seat !== 'number') return;
+    var mySeat = (_state && _state.my_seat != null) ? _state.my_seat : 0;
+    var isMine = data.seat === mySeat;
+
+    if(data.is_chkobba && window.showCommentaryToast && window.toastsEnabled && window.toastsEnabled())
+        window.showCommentaryToast('Mabrouk! \uD83C\uDF89');
+
+    if(isMine){
+        if(!_pendingCaptureEls || !_pendingCaptureEls.length) return;
+        window.playCardCaptureSound();
+        var flyEls = _pendingCaptureEls.slice();
+        var flyRects = (_pendingCaptureRects || []).slice();
+        if(_pendingCaptureHandEl && _pendingCaptureHandRect){
+            flyEls.push(_pendingCaptureHandEl);
+            flyRects.push(_pendingCaptureHandRect);
+        }
+        _pendingCaptureEls = null;
+        _pendingCaptureRects = null;
+        _pendingCaptureHandEl = null;
+        _pendingCaptureHandRect = null;
+        _botAnimating = true;
+        flyEls.forEach(function(e){ if(e.parentNode) e.classList.add('capture-flash'); });
+        var flyMs = pileFlyDurationMs(CAPTURE_FLY_BASE_MS, flyEls.length);
+        flyToPile(flyEls, '#player-cap', flyMs, flyRects);
+        setTimeout(function(){
+            _botAnimating = false;
+            if(_state) applyState(_state, null);
+        }, flyMs + CAPTURE_SYNC_PAD_MS);
+        return;
+    }
+
+    if(_botAnimating || _botCaptureTimer) return;
+    _botAnimating = true;
+    window.playCardCaptureSound();
+
+    function doFly(){
+        var flyEls = [];
+        var bc = document.querySelector('.bot-capture-card');
+        if(bc) flyEls.push(bc);
+        var oppHost = document.getElementById('bot-cards');
+        if(!bc && oppHost){
+            var oppCard = oppHost.querySelector('.card-back') || oppHost.querySelector('.card');
+            if(oppCard) flyEls.push(oppCard);
+        }
+        var tcEl = document.getElementById('table-cards');
+        var captured = data.captured || [];
+        if(tcEl){
+            captured.forEach(function(cardStr){
+                tcEl.querySelectorAll('.table-card:not(.table-slot-empty)').forEach(function(el){
+                    if(el.dataset.cardStr === cardStr) flyEls.push(el);
+                });
+            });
+        }
+        if(!flyEls.length){
+            _finishBotCaptureSync(true);
+            return;
+        }
+        flyEls.forEach(function(e){ e.classList.add('capture-flash'); });
+        var flyMs = pileFlyDurationMs(CAPTURE_FLY_BASE_MS, flyEls.length);
+        var pileId = '#bot-cap';
+        flyToPile(flyEls, pileId, flyMs);
+        _botCaptureTimer = setTimeout(function(){
+            _botCaptureTimer = null;
+            _finishBotCaptureSync(true);
+        }, flyMs + CAPTURE_SYNC_PAD_MS);
+    }
+
+    if(data.is_chkobba && window.chkobbaAnimation){
+        var capOnTable = Array.from(document.querySelectorAll('#table-cards .table-card:not(.table-slot-empty)'));
+        capOnTable.forEach(function(e){ e.classList.add('chkobba-glow'); });
+        var felt = document.querySelector('.felt-cards') || document.querySelector('.felt');
+        setTimeout(function(){
+            window.chkobbaAnimation(felt || document.body, doFly);
+        }, 200);
+    } else {
+        setTimeout(doFly, OPP_CAPTURE_REVEAL_MS);
+    }
+}
+
+function updateTurnAnnounce(st, human, oppName){
+    var el = document.getElementById('turn-announce');
+    if(!el) return;
+    if(st.awaiting_cut_choice){
+        el.textContent = st.is_opening_cutter
+            ? 'Choose keep or discard for the cut card.'
+            : 'Waiting for the cut choice.';
+    } else if(st.round_over || st.match_over){
+        el.textContent = '';
+    } else if(human){
+        el.textContent = 'Your turn.';
+    } else if(st.has_pending_bot){
+        el.textContent = (oppName || 'Opponent') + ' is playing.';
+    } else {
+        el.textContent = (oppName || 'Opponent') + ' is thinking.';
+    }
+}
+
 function takeSnap(fromEl,isBot){
     var snap={played:null,bot:null,table:{}};
     if(fromEl){
@@ -1221,6 +1605,7 @@ function bindCutChoiceButtonsPlay(){
 }
 
 function applyState(st,snap,prevStateOverride){
+    try {
     if(!st||st.show_start_screen){window.location.href='/';return;}
     if(st.match_over){window.location.reload();return;}
     // Hide round-over prompt if next round started
@@ -1247,9 +1632,11 @@ function applyState(st,snap,prevStateOverride){
                 }
             }
         }
+        _prevHumanHandLen=0;
+        _prevBotHandCount=0;
         var hcRo=document.getElementById('hand-cards');
         var bcRo=document.getElementById('bot-cards');
-        if(hcRo) hcRo.innerHTML=buildHand(st.human_hand||[],false);
+        if(hcRo) hcRo.innerHTML=buildHand(st.human_hand||[], false);
         if(bcRo) bcRo.innerHTML=buildBotHand(st.bot_hand_count||0,false,null);
         setTimeout(function(){
             if(st.round_end_sweep&&st.round_end_sweep.cards&&st.round_end_sweep.cards.length){
@@ -1261,7 +1648,30 @@ function applyState(st,snap,prevStateOverride){
             }
             applyRoundOverPanel(st);
             _state=st;
-        },1000);
+        },300);
+        return;
+    }
+
+    // Detect bot move committed (prevStateOverride: socket setState already updated _state).
+    if(!_botMoveCommitted && !st.has_pending_bot && prevStateOverride && prevStateOverride.has_pending_bot){
+        _botMoveCommitted = true;
+    }
+
+    var human=!!(st.human_is_current&&!st.round_over&&!st.has_pending_bot);
+    var oppName=st.bot_name||'Opponent';
+
+    if(_isDealing || _botAnimating){
+        _applyHudOnly(st, human, oppName);
+        if(st.has_pending_bot){
+            var _snapBcDeal=document.querySelector('.bot-capture-card');
+            if(_snapBcDeal) _pendingBotSnap=takeSnap(_snapBcDeal,true);
+        }
+        _prevHumanHandLen=st.human_hand?st.human_hand.length:0;
+        _prevBotHandCount=st.bot_hand_count||0;
+        _prevDeckRemaining=st.deck_remaining||0;
+        _prevHumanHand=st.human_hand?st.human_hand.slice():[];
+        _prevAwaitingCutChoice=!!st.awaiting_cut_choice;
+        _state=st;
         return;
     }
 
@@ -1287,36 +1697,31 @@ function applyState(st,snap,prevStateOverride){
         }
     }
 
-    var human=!!(st.human_is_current&&!st.round_over&&!st.has_pending_bot);
-    var oppName=st.bot_name||'Opponent';
     var wasAwaitingCut=_prevAwaitingCutChoice;
     if(!st.awaiting_cut_choice){
         var cutOvlEarly=document.getElementById('cut-choice-overlay');
         if(cutOvlEarly) cutOvlEarly.style.display='none';
     }
 
-    var isDeal=_prevHumanHandLen===0&&_prevBotHandCount===0&&
+    var isDeal=_state!==null&&_prevHumanHandLen===0&&_prevBotHandCount===0&&
                st.human_hand&&st.human_hand.length>0&&st.bot_hand_count>0;
+    var roundMoves=(st.round_moves_played!=null)?st.round_moves_played:0;
+    var isMidRoundHandDeal=isDeal&&roundMoves>0;
+    var isOpeningDeal=isDeal&&!isMidRoundHandDeal;
 
-    var openingSeq=null;
-    if(isDeal && wasAwaitingCut && _lastSeenCutCard && st.human_hand && st.human_hand.length===3){
-        if(st.human_hand[0]===_lastSeenCutCard) openingSeq='keep_cutter';
-        else if(st.human_hand.indexOf(_lastSeenCutCard)<0) openingSeq='discard_cutter';
-    }
-
-    var oppOpensFirstDeal=!openingSeq&&(st.opp_first_js_deal===false?false:!!(
-        isDeal && st.has_pending_bot && !st.human_is_current &&
+    var oppOpensFirstDeal=(st.opp_first_js_deal===false?false:!!(
+        isOpeningDeal && st.has_pending_bot && !st.human_is_current &&
         (st.game_mode === 'solo' || !st.game_mode) &&
         (st.opp_first_js_deal === true || !wasAwaitingCut)
     ));
 
-    var openingOppPaintHold=!!(st.opp_first_js_deal===true && !oppOpensFirstDeal && !openingSeq &&
+    var openingOppPaintHold=!!(st.opp_first_js_deal===true && !oppOpensFirstDeal &&
         st.has_pending_bot && !st.human_is_current && (st.game_mode === 'solo' || !st.game_mode));
 
     var tc=document.getElementById('table-cards');
     var hc=document.getElementById('hand-cards');
     var bc=document.getElementById('bot-cards');
-    if(oppOpensFirstDeal){
+    if(oppOpensFirstDeal && !_isDealing){
         document.documentElement.classList.remove('chk-opp-first-boot');
         if(tc) tc.innerHTML='<p class="felt-empty">No cards on the table</p>';
         if(hc) hc.innerHTML='<span class="zone-empty">No cards</span>';
@@ -1381,93 +1786,89 @@ function applyState(st,snap,prevStateOverride){
             else hint.textContent=st.has_pending_bot?oppPlayingMsg(oppName):(human?'Tap a card in your hand to play':oppThinkMsg(oppName));
         }
     }
+    updateTurnAnnounce(st, human, oppName);
     var playForm=document.getElementById('play-form');
     if(playForm) playForm.style.display=(human && !st.awaiting_cut_choice)?'':'none';
 
-    if(!oppOpensFirstDeal && !openingOppPaintHold){
-        if(tc){
-            tc.innerHTML=buildTable(st.table_slots,human,st.last_played_card,st.last_played_by);
-            tc.querySelectorAll('.table-card:not(.table-slot-empty)').forEach(enhance);
-            scatterAndFlip(tc,snap);
-        }
-        if(!_isDealing){
-            if(hc){
-                hc.innerHTML=buildHand(st.human_hand,human);
-                hc.querySelectorAll('.hand-card').forEach(enhance);
-            }
-            if(bc){
-                bc.innerHTML=buildBotHand(st.bot_hand_count,st.has_pending_bot,st.pending_bot_played_card);
-                var bcc=bc.querySelector('.bot-capture-card'); if(bcc) enhance(bcc);
-            }
-        }
+    if(!oppOpensFirstDeal && !openingOppPaintHold && !isOpeningDeal && !isMidRoundHandDeal && !_isDealing && !_botAnimating && _botMoveCommitted){
+        _syncGameDom(st, human, snap || _pendingBotSnap);
+        if(!st.has_pending_bot) _pendingBotSnap = null;
+    }
+    if(st.has_pending_bot && !snap){
+        var _snapBc=document.querySelector('.bot-capture-card');
+        if(_snapBc) _pendingBotSnap=takeSnap(_snapBc,true);
     }
 
-    var skipAttachForOpening=!!(isDeal && openingSeq);
-    if(isDeal){
-        if(openingSeq){
-            var cutRef=_lastSeenCutCard;
-            _lastSeenCutCard=null;
-            animateOpeningDealSequenced(st, openingSeq, cutRef, function(){
-                if(!st.has_pending_bot){
-                    var humDone=!!(st.human_is_current&&!st.round_over&&!st.has_pending_bot);
-                    if(humDone) attachListeners(st.capture_map);
-                }
-            });
-        } else if(oppOpensFirstDeal){
-            function restoreOppOpeningHudPlay(){
-                document.documentElement.classList.remove('chk-opp-first-boot');
-                var bcEl=document.getElementById('bot-cards');
-                if(bcEl){
-                    bcEl.innerHTML=buildBotHand(st.bot_hand_count,st.has_pending_bot,st.pending_bot_played_card);
-                    var bcc2=bcEl.querySelector('.bot-capture-card'); if(bcc2) enhance(bcc2);
-                }
-                var hintEl=document.getElementById('selection-hint');
-                if(hintEl && !st.awaiting_cut_choice){
-                    if(st.has_pending_bot) hintEl.textContent=oppPlayingMsg(oppName);
-                    else hintEl.textContent=human?'Tap a card in your hand to play':oppThinkMsg(oppName);
-                }
-                var bStEl=document.querySelector('.opp-zone .zone-status');
-                if(bStEl && !st.awaiting_cut_choice){
-                    if(st.has_pending_bot) bStEl.innerHTML='<span class="badge thinking">Playing…</span>';
-                    else if(!st.human_is_current) bStEl.innerHTML='<span class="badge thinking">Thinking…</span>';
-                    else bStEl.innerHTML='';
-                }
-            }
-            var humanRef=human;
-            setTimeout(function(){
-                var tcEl=document.getElementById('table-cards');
-                var hcEl=document.getElementById('hand-cards');
-                var bcEl=document.getElementById('bot-cards');
-                if(tcEl){
-                    tcEl.innerHTML=buildTable(st.table_slots,humanRef,st.last_played_card,st.last_played_by);
-                    tcEl.querySelectorAll('.table-card:not(.table-slot-empty)').forEach(enhance);
-                    tcEl.querySelectorAll('.table-card:not(.table-slot-empty)').forEach(function(c){ c.style.visibility='hidden'; });
-                    scatterAndFlip(tcEl,null);
-                }
-                if(hcEl){
-                    hcEl.innerHTML=buildHand(st.human_hand,humanRef);
-                    hcEl.querySelectorAll('.hand-card').forEach(enhance);
-                    hcEl.querySelectorAll('.hand-card').forEach(function(c){ c.style.visibility='hidden'; });
-                }
-                if(bcEl){
-                    bcEl.innerHTML=buildBotHand(st.bot_hand_count,false,null);
-                    bcEl.querySelectorAll('.card').forEach(function(c){ c.style.visibility='hidden'; });
-                }
-                requestAnimationFrame(function(){
-                    requestAnimationFrame(function(){
-                        animateOppFirstFullDeal(st, restoreOppOpeningHudPlay);
-                    });
-                });
-                scheduleTableColumnAdjustAfterDeal(st);
-            }, dealMs(220));
-        } else {
-            animateDeal(st, null);
-            scheduleTableColumnAdjustAfterDeal(st);
+    if(isOpeningDeal && !_isDealing){
+        _isDealing = true;
+        _botMoveCommitted = false;
+        _resetDomFp();
+        _lastSeenCutCard = null;
+        // Clear all zones first (same visual for both bot-start and human-start)
+        if(tc) tc.innerHTML = '';
+        if(hc) hc.innerHTML = '';
+        if(bc) bc.innerHTML = '';
+        function dealOnDone(){
+            _onDealAnimationDone(st, true);
         }
+        var humanRef = human;
+        var tcEl = document.getElementById('table-cards');
+        var hcEl = document.getElementById('hand-cards');
+        var bcEl = document.getElementById('bot-cards');
+        if(tcEl){
+            tcEl.innerHTML = buildTable(st.table_slots, humanRef, st.last_played_card, st.last_played_by);
+            tcEl.querySelectorAll('.table-card:not(.table-slot-empty)').forEach(enhance);
+            tcEl.querySelectorAll('.table-card:not(.table-slot-empty)').forEach(function(c){ c.style.visibility = 'hidden'; });
+            scatterAndFlip(tcEl, null);
+        }
+        if(hcEl){
+            hcEl.innerHTML = buildHand(st.human_hand, false);
+            hcEl.querySelectorAll('.hand-card').forEach(enhance);
+            hcEl.querySelectorAll('.hand-card').forEach(function(c){ c.style.visibility = 'hidden'; });
+        }
+        if(bcEl){
+            bcEl.innerHTML = buildBotHand(st.bot_hand_count, st.has_pending_bot, st.pending_bot_played_card);
+            bcEl.querySelectorAll('.bot-capture-card').forEach(enhance);
+            bcEl.querySelectorAll('.card-back').forEach(function(c){ c.style.visibility = 'hidden'; });
+            var _bcc0 = bcEl.querySelector('.bot-capture-card');
+            if(_bcc0) _bcc0.style.visibility = 'hidden';
+        }
+        document.documentElement.classList.remove('chk-opp-first-boot');
+        window.playCardDealStartSound();
+        animateDeal(st, dealOnDone, true);
+        _domFp.table = _fpTable(st);
+        _domFp.hand = _fpHand(st);
+        _domFp.bot = _fpBot(st);
+        _domFp.tableSel = humanRef;
+        _domFp.handSel = false;
+        scheduleTableColumnAdjustAfterDeal(st);
     }
 
-    // Mid-round draw animation: card flies from deck when deck_remaining drops
-    if(!isDeal&&_prevDeckRemaining>(st.deck_remaining||0)){
+    if(isMidRoundHandDeal && !_isDealing){
+        _isDealing = true;
+        _botMoveCommitted = false;
+        window.playCardDealMiddleSound();
+        var hcMid = document.getElementById('hand-cards');
+        var bcMid = document.getElementById('bot-cards');
+        if(hcMid){
+            hcMid.innerHTML = buildHand(st.human_hand, false);
+            hcMid.querySelectorAll('.hand-card').forEach(enhance);
+            hcMid.querySelectorAll('.hand-card').forEach(function(c){ c.style.visibility = 'hidden'; });
+        }
+        if(bcMid){
+            bcMid.innerHTML = buildBotHand(st.bot_hand_count, st.has_pending_bot, st.pending_bot_played_card);
+            bcMid.querySelectorAll('.bot-capture-card').forEach(enhance);
+            bcMid.querySelectorAll('.card-back').forEach(function(c){ c.style.visibility = 'hidden'; });
+            var _bccMid = bcMid.querySelector('.bot-capture-card');
+            if(_bccMid) _bccMid.style.visibility = 'hidden';
+        }
+        animateDeal(st, function(){ _onDealAnimationDone(st, true); }, false);
+        _domFp.hand = _fpHand(st);
+        _domFp.bot = _fpBot(st);
+    }
+
+    if(!isOpeningDeal && !isMidRoundHandDeal && _prevDeckRemaining>(st.deck_remaining||0)){
+        window.playCardDealMiddleSound();
         // Human: find new card indices by content comparison
         if(st.human_hand&&_prevHumanHand){
             var hIdxs=[];
@@ -1494,9 +1895,22 @@ function applyState(st,snap,prevStateOverride){
 
     updateCutOverlayPlay(st);
 
-    if(human && !st.awaiting_cut_choice && !skipAttachForOpening) attachListeners(st.capture_map);
+    if(st.has_pending_bot){
+        if(st.pending_bot_is_capture && !openingOppPaintHold && !isOpeningDeal && !isMidRoundHandDeal && !_isDealing && !_botAnimating && !_useSocket()){
+            animateBotCapture(st);
+        }
+    } else if(!_botAnimating){
+        if(_botCaptureTimer && _botCaptureTimer !== -1){
+            clearTimeout(_botCaptureTimer);
+            _botCaptureTimer = null;
+        }
+    }
+
+    if(human && !st.awaiting_cut_choice) attachListeners(st.capture_map);
+    else if(!human) _clearSelectionUI();
 
     _state=st;
+    } catch(e) { console.warn('applyState', e); }
 }
 
 function animateOpponentReveal(playedCard){
@@ -1521,6 +1935,7 @@ function animateOpponentReveal(playedCard){
 
     // Phase 2: flip to face.
     setTimeout(function(){
+        window.playCardPlaySound();
         if(!reveal || !reveal.parentNode) return;
         reveal.classList.remove('card-back');
         reveal.textContent = playedCard;
@@ -1542,7 +1957,11 @@ function scheduleBotTurn(st){
 
 // ── playCard ──────────────────────────────────────────────────────────────
 function playCard(handIdx,tableIdxs,handEl,tableEls,isCapture,isChk){
-    if(_busy) return;
+    if(!_canHumanPlay()) return;
+
+    var resolved = _resolveHandPlay(handIdx, handEl);
+    handIdx = resolved.index;
+    var playedCardStr = resolved.cardStr;
 
     var captureData=tableIdxs.map(function(ti){
         for(var i=0;i<(_state.table_slots||[]).length;i++){
@@ -1569,9 +1988,13 @@ function playCard(handIdx,tableIdxs,handEl,tableEls,isCapture,isChk){
                 });
             });
         }
+        _pendingCaptureHandEl = handEl;
+        _pendingCaptureHandRect = handEl ? rectObj(handEl.getBoundingClientRect()) : null;
     } else {
         _pendingCaptureEls=null;
         _pendingCaptureRects=null;
+        _pendingCaptureHandEl=null;
+        _pendingCaptureHandRect=null;
     }
 
     var pred=predictPlay(_state,handIdx,tableIdxs);
@@ -1580,25 +2003,50 @@ function playCard(handIdx,tableIdxs,handEl,tableEls,isCapture,isChk){
     if(isChk&&window.chkobbaAnimation){
         var felt=document.querySelector('.felt');
         window.chkobbaAnimation(felt||document.body,function(){});
+    } else if(isCapture && !_useSocket()){
+        window.playCardCaptureSound();
+    } else if(!isCapture){
+        window.playCardPlaySound();
     }
-
     if(window.Game&&window.Game.socket&&window.Game.socket.connected&&_state){
-        var playedCard=window.cardStrToData(_state.human_hand[handIdx]);
-        applyState(pred,snap);
-        showSync();
+        var playedCard=window.cardStrToData(playedCardStr);
+        _busy=true; showSync();
         window.Game.playCard(playedCard,captureData);
+        if(isCapture){
+            if(isChk){
+                /* busy cleared on state_snapshot */
+            } else {
+                if(handEl && handEl.parentNode) handEl.parentNode.removeChild(handEl);
+                /* capture fly driven by cards_captured event */
+            }
+        } else {
+            if(handEl && handEl.parentNode) handEl.parentNode.removeChild(handEl);
+            applyState(pred,snap);
+        }
         return;
     }
     // Fallback (disconnected) — show optimistic state only
     applyState(pred,snap);
 }
 
-// ── attachListeners ───────────────────────────────────────────────────────
-function attachListeners(captureMap){
-    var hCards=document.querySelectorAll('#hand-cards .card.selectable');
-    var tCards=document.querySelectorAll('#table-cards .card.selectable');
+// ── attachListeners (wired once; reads live _state.capture_map) ───────────
+var _selHand=null, _selHandEl=null, _selTable=new Set(), _valid=false, _inputWired=false;
+
+function _clearSelectionUI(){
+    _selHand=null; _selHandEl=null; _selTable.clear(); _valid=false;
+    document.querySelectorAll('#hand-cards .card.selectable').forEach(function(c){
+        c.classList.remove('selected'); c.style.opacity=''; c.style.pointerEvents='';
+    });
+    document.querySelectorAll('#table-cards .card.selectable').forEach(function(c){
+        c.classList.remove('highlighted','valid-capture','selected');
+    });
+}
+
+function attachListeners(_captureMapIgnored){
+    if(_inputWired) return;
+    _inputWired=true;
+
     var hint=document.getElementById('selection-hint');
-    var selHand=null, selHandEl=null, selTable=new Set(), valid=false;
 
     function tip(s){ if(hint) hint.textContent=s; }
     function eq(a,b){
@@ -1606,67 +2054,78 @@ function attachListeners(captureMap){
         var sa=a.slice().sort(function(x,y){return x-y;}), sb=b.slice().sort(function(x,y){return x-y;});
         return sa.every(function(v,i){return v===sb[i];});
     }
+    function captureMap(){ return (_state && _state.capture_map) || {}; }
     function clearHL(){
-        hCards.forEach(function(c){c.classList.remove('selected');c.style.opacity='';c.style.pointerEvents='';});
-        tCards.forEach(function(c){c.classList.remove('highlighted','valid-capture','selected');});
+        document.querySelectorAll('#hand-cards .card.selectable').forEach(function(c){
+            c.classList.remove('selected'); c.style.opacity=''; c.style.pointerEvents='';
+        });
+        document.querySelectorAll('#table-cards .card.selectable').forEach(function(c){
+            c.classList.remove('highlighted','valid-capture','selected');
+        });
     }
     function reset(){
-        selHand=null; selHandEl=null; selTable.clear(); valid=false;
+        _selHand=null; _selHandEl=null; _selTable.clear(); _valid=false;
         clearHL(); tip('Tap a card in your hand to play');
     }
     function highlight(opts){
         var all=new Set();
         opts.forEach(function(o){o.table_indices.forEach(function(i){all.add(String(i));});});
-        tCards.forEach(function(c){if(all.has(c.dataset.tableIndex))c.classList.add('highlighted','valid-capture');});
+        document.querySelectorAll('#table-cards .card.selectable').forEach(function(c){
+            if(all.has(c.dataset.tableIndex)) c.classList.add('highlighted','valid-capture');
+        });
     }
     function findMatch(hi,ti){
-        var opts=captureMap[hi]; if(!opts) return null;
+        var opts=_captureOptsForHand(hi, _selHandEl); if(!opts.length) return null;
         var s=ti.slice().sort(function(a,b){return a-b;});
         for(var i=0;i<opts.length;i++){if(eq(opts[i].table_indices,s))return opts[i];}
         return null;
     }
     function refresh(){
-        if(selHand===null){valid=false;return;}
-        var arr=Array.from(selTable);
-        valid=Boolean(findMatch(selHand,arr));
-        if(valid) tip(arr.length===0?'Playing to the table…':'Valid capture — tap Play');
+        if(_selHand===null){_valid=false;return;}
+        var arr=Array.from(_selTable);
+        _valid=Boolean(findMatch(_selHand,arr));
+        if(_valid) tip(arr.length===0?'Playing to the table…':'Valid capture — tap a highlighted card');
         else      tip(arr.length===0?'Tap a table card to capture':'Invalid selection — try again');
     }
 
-    hCards.forEach(function(card){
-        card.addEventListener('click',function(){
-            var idx=this.dataset.handIndex;
-            reset(); selHand=idx; selHandEl=this; this.classList.add('selected');
-            var opts=(captureMap[idx]||[]).filter(function(o){return o.is_capture;});
-            if(opts.length===0){
-                valid=true; selTable.clear(); tip('Playing to the table…');
-                playCard(parseInt(idx),[],this,null,false,false);
-                return;
-            }
-            highlight(opts); tip('Tap a table card to capture'); refresh();
-        });
+    var hc=document.getElementById('hand-cards');
+    var tc=document.getElementById('table-cards');
+    if(hc) hc.addEventListener('click',function(e){
+        if(!_canHumanPlay()) return;
+        var card=e.target.closest('.hand-card.selectable');
+        if(!card) return;
+        var idx=String(_stateHandIdxFromEl(card));
+        reset(); _selHand=idx; _selHandEl=card; card.classList.add('selected');
+        var opts=(_captureOptsForHand(idx, card)||[]).filter(function(o){return o.is_capture;});
+        if(opts.length===0){
+            _valid=true; _selTable.clear(); tip('Playing to the table…');
+            playCard(parseInt(idx,10),[],card,null,false,false);
+            return;
+        }
+        highlight(opts); tip('Tap a table card to capture'); refresh();
     });
-
-    tCards.forEach(function(card){
-        card.addEventListener('click',function(){
-            if(selHand===null){tip('Tap a card in your hand first');return;}
-            if(!this.classList.contains('valid-capture')){tip('Not part of a valid capture');return;}
-            var idx=parseInt(this.dataset.tableIndex,10);
-            if(selTable.has(idx)){selTable.delete(idx);this.classList.remove('selected');}
-            else{selTable.add(idx);this.classList.add('selected');}
-            refresh();
-            if(valid){
-                tip('Playing move…');
-                var selT=Array.from(tCards).filter(function(c){return c.classList.contains('selected');});
-                var allNE=Array.from(document.querySelectorAll('#table-cards .table-card:not(.table-slot-empty)'));
-                var isChk=selT.length>0&&selT.length===allNE.length;
-                playCard(parseInt(selHand),Array.from(selTable),selHandEl,selT,true,isChk);
-            }
-        });
+    if(tc) tc.addEventListener('click',function(e){
+        if(!_canHumanPlay()) return;
+        var card=e.target.closest('.table-card.selectable');
+        if(!card) return;
+        if(_selHand===null){tip('Tap a card in your hand first');return;}
+        if(!card.classList.contains('valid-capture')){tip('Not part of a valid capture');return;}
+        var idx=parseInt(card.dataset.tableIndex,10);
+        if(_selTable.has(idx)){_selTable.delete(idx);card.classList.remove('selected');}
+        else{_selTable.add(idx);card.classList.add('selected');}
+        refresh();
+        if(_valid){
+            tip('Playing move…');
+            var selT=Array.from(document.querySelectorAll('#table-cards .card.selectable')).filter(function(c){return c.classList.contains('selected');});
+            var allNE=Array.from(document.querySelectorAll('#table-cards .table-card:not(.table-slot-empty)'));
+            var isChk=selT.length>0&&selT.length===allNE.length;
+            playCard(parseInt(_selHand,10),Array.from(_selTable),_selHandEl,selT,true,isChk);
+        }
     });
 }
 
 (function init(){
+    document.querySelectorAll('.zone-cards.init-hidden').forEach(function(el){ el.classList.remove('init-hidden'); });
     var ps=null;
     try{var el=document.getElementById('page-state');if(el) ps=JSON.parse(el.textContent);}catch(e){}
     if(!ps||ps.round_over||ps.match_over) return;
@@ -1680,12 +2139,14 @@ function attachListeners(captureMap){
         : !!(openDeal && !ps.awaiting_cut_choice && ps.has_pending_bot && !ps.human_is_current &&
             (ps.game_mode === 'solo' || !ps.game_mode));
 
+    if(!openDeal) document.documentElement.classList.remove('chk-opp-first-boot');
+
     if(oppOpensFirstInit){
         var tc0=document.getElementById('table-cards'), hc0=document.getElementById('hand-cards'), bc0=document.getElementById('bot-cards');
         if(tc0) tc0.innerHTML='<p class="felt-empty">No cards on the table</p>';
         if(hc0) hc0.innerHTML='<span class="zone-empty">No cards</span>';
         if(bc0) bc0.innerHTML='<span class="zone-empty">No cards</span>';
-        document.documentElement.classList.remove('chk-opp-first-boot');
+        document.documentElement.classList.add('chk-opp-first-boot');
         var hint0=document.getElementById('selection-hint');
         if(hint0) hint0.textContent='Dealing cards…';
         var bSt0=document.querySelector('.opp-zone .zone-status');
@@ -1693,10 +2154,8 @@ function attachListeners(captureMap){
     }
 
     document.querySelectorAll('.zone-cards.init-hidden').forEach(function(el){ el.classList.remove('init-hidden'); });
-    var _iniBpc=document.querySelector('#bot-cards .bot-capture-card');
-    if(_iniBpc) _iniBpc.style.visibility='hidden';
 
-    if(!oppOpensFirstInit){
+    if(!oppOpensFirstInit && !openDeal){
         document.documentElement.classList.remove('chk-opp-first-boot');
         (function(){
             var _tc=document.getElementById('table-cards');
@@ -1722,36 +2181,8 @@ function attachListeners(captureMap){
 
     if(openDeal){
         _isDealing=true;
-        var _pendingCardStr=null;
-        var _pcc=document.querySelector('#bot-cards .bot-capture-card');
-        if(_pcc){
-            _pendingCardStr=_pcc.textContent.trim();
-            var _tempBack=document.createElement('div');
-            _tempBack.className='card card-back';
-            _tempBack.dataset.pendingCard=_pendingCardStr;
-            _pcc.parentNode.replaceChild(_tempBack, _pcc);
-        }
+        _botMoveCommitted=false;
         setTimeout(function(){
-            function afterInitDealPlay(){
-                if(!oppOpensFirstInit) return;
-                var bc1=document.getElementById('bot-cards');
-                if(bc1){
-                    bc1.innerHTML=buildBotHand(ps.bot_hand_count,ps.has_pending_bot,ps.pending_bot_played_card);
-                    var bcc1=bc1.querySelector('.bot-capture-card'); if(bcc1) enhance(bcc1);
-                }
-                var hint1=document.getElementById('selection-hint');
-                var oppNm2=ps.bot_name||'Opponent';
-                if(hint1 && !ps.awaiting_cut_choice){
-                    if(ps.has_pending_bot) hint1.textContent=oppPlayingMsg(oppNm2);
-                    else hint1.textContent=ps.human_is_current?'Tap a card in your hand to play':oppThinkMsg(oppNm2);
-                }
-                var bSt1=document.querySelector('.opp-zone .zone-status');
-                if(bSt1 && !ps.awaiting_cut_choice){
-                    if(ps.has_pending_bot) bSt1.innerHTML='<span class="badge thinking">Playing…</span>';
-                    else if(!ps.human_is_current) bSt1.innerHTML='<span class="badge thinking">Thinking…</span>';
-                    else bSt1.innerHTML='';
-                }
-            }
             if(oppOpensFirstInit){
                 var humanP=!!(ps.human_is_current&&!ps.round_over&&!ps.has_pending_bot);
                 var tcE=document.getElementById('table-cards'), hcE=document.getElementById('hand-cards'), bcE=document.getElementById('bot-cards');
@@ -1762,33 +2193,25 @@ function attachListeners(captureMap){
                     scatterAndFlip(tcE,null);
                 }
                 if(hcE){
-                    hcE.innerHTML=buildHand(ps.human_hand,humanP);
+                    hcE.innerHTML=buildHand(ps.human_hand, false);
                     hcE.querySelectorAll('.hand-card').forEach(enhance);
                     hcE.querySelectorAll('.hand-card').forEach(function(c){ c.style.visibility='hidden'; });
                 }
                 if(bcE){
-                    bcE.innerHTML=buildBotHand(ps.bot_hand_count,false,null);
-                    bcE.querySelectorAll('.card').forEach(function(c){ c.style.visibility='hidden'; });
+                    bcE.innerHTML=buildBotHand(ps.bot_hand_count,ps.has_pending_bot,ps.pending_bot_played_card);
+                    bcE.querySelectorAll('.bot-capture-card').forEach(enhance);
+                    bcE.querySelectorAll('.card-back').forEach(function(c){ c.style.visibility='hidden'; });
+                    var _bccE=bcE.querySelector('.bot-capture-card');
+                    if(_bccE) _bccE.style.visibility='hidden';
                 }
-                requestAnimationFrame(function(){
-                    requestAnimationFrame(function(){
-                        animateOppFirstFullDeal(ps, afterInitDealPlay);
-                    });
-                });
             } else {
-                animateDeal(ps, function(){
-                    setTimeout(function(){
-                        var _tb=document.querySelector('#bot-cards .card-back[data-pending-card]');
-                        if(_tb && _pendingCardStr){
-                            _tb.classList.remove('card-back');
-                            _tb.textContent=_pendingCardStr;
-                            if(isRed(_pendingCardStr)) _tb.classList.add('red-suit');
-                            enhance(_tb);
-                        }
-                        _isDealing=false;
-                    }, 600);
-                });
+                document.querySelectorAll('#table-cards .table-card:not(.table-slot-empty), #hand-cards .hand-card, #bot-cards .card-back').forEach(function(c){ c.style.visibility='hidden'; });
+                var _bccH=document.querySelector('#bot-cards .bot-capture-card');
+                if(_bccH) _bccH.style.visibility='hidden';
             }
+            document.documentElement.classList.remove('chk-opp-first-boot');
+            window.playCardDealStartSound();
+            animateDeal(ps, function(){ _onDealAnimationDone(ps, false); }, true);
             scheduleTableColumnAdjustAfterDeal(ps);
         }, dealMs(oppOpensFirstInit ? 220 : 190));
     }
@@ -1800,6 +2223,11 @@ function attachListeners(captureMap){
 
 window._gameEngine={
     applyState:applyState, statesMatch:statesMatch, reconcile:reconcile,
+    onServerConfirm:onServerConfirm,
+    clearPlayBusy:clearPlayBusy,
+    runSocketCaptureFly:runSocketCaptureFly,
+    isDealing:function(){ return _isDealing; },
+    isBotAnimating:function(){ return _botAnimating; },
     getState:function(){return _state;}, setState:function(s){_state=s;},
     _lastPredicted:null,
 };
@@ -1825,11 +2253,12 @@ document.addEventListener('DOMContentLoaded', function(){
     if(!ps.game_active){
         window.Game.socket.on('state_snapshot', function(){
             var ws  = document.getElementById('waiting-screen');
+            if(!ws || ws.classList.contains('hidden')) return;
             var cdo = document.getElementById('countdown-overlay');
             var gbw = document.getElementById('game-board-wrap');
-            if(ws)  ws.classList.add('hidden');
             if(cdo) cdo.classList.add('hidden');
             if(gbw) gbw.classList.remove('hidden');
+            ws.classList.add('hidden');
         });
     }
 
@@ -1989,58 +2418,19 @@ document.addEventListener('DOMContentLoaded', function(){
         var engine = window._gameEngine;
         var st = (engine && engine.getState) ? engine.getState() : null;
         if(!st || typeof data.seat !== 'number') return;
-        if(data.seat === st.my_seat) return; // Ignore our own play events.
-        // Solo-vs-bot already shows a pre-play pending card via state_snapshot.
-        // Avoid adding a second visual reveal card.
+        if(data.seat === st.my_seat) return;
         if(st.game_mode === 'solo') return;
+        if(engine.isDealing && engine.isDealing()) return;
+        if(engine.isBotAnimating && engine.isBotAnimating()) return;
+        if(st.has_pending_bot) return;
+        var host = document.getElementById('bot-cards');
+        if(host && host.querySelector('.bot-capture-card')) return;
         animateOpponentReveal(data.card || null);
     });
 
     window.Game.on('cards_captured', function(data){
-        var engine = window._gameEngine;
-        var st = (engine && engine.getState) ? engine.getState() : null;
-        var isMine = st && typeof data.seat === 'number' && data.seat === st.my_seat;
-
-        var flyEls;
-        var flyRects;
-        if(isMine){
-            // Human just played: elements+rects saved before optimistic DOM wipe
-            flyEls = _pendingCaptureEls || [];
-            flyRects = _pendingCaptureRects || null;
-            _pendingCaptureEls = null;
-            _pendingCaptureRects = null;
-        } else {
-            // Opponent captured: table cards still in DOM (state_snapshot not yet arrived)
-            flyEls = [];
-            var oppHost = document.getElementById('bot-cards');
-            if(oppHost){
-                var oppCard = oppHost.querySelector('.bot-capture-card')
-                           || oppHost.querySelector('.card-back')
-                           || oppHost.querySelector('.card');
-                if(oppCard) flyEls.push(oppCard);
-            }
-            var captured = data.captured || [];
-            var tcEl = document.getElementById('table-cards');
-            if(tcEl){
-                captured.forEach(function(cardStr){
-                    tcEl.querySelectorAll('.table-card').forEach(function(el){
-                        if(el.dataset.cardStr === cardStr) flyEls.push(el);
-                    });
-                });
-            }
-            flyRects = null;
-        }
-
-        var pileId = isMine ? '#player-cap' : '#bot-cap';
-        var OPP_CAPTURE_REVEAL_MS = 500;
-        if(flyEls.length){
-            var flyMs = pileFlyDurationMs(600, flyEls.length);
-            if(isMine) flyToPile(flyEls, pileId, flyMs, flyRects);
-            else setTimeout(function(){ flyToPile(flyEls, pileId, flyMs, flyRects); }, OPP_CAPTURE_REVEAL_MS);
-        }
-
-        if(data.is_chkobba && window.showCommentaryToast && window.toastsEnabled && window.toastsEnabled())
-            window.showCommentaryToast('Mabrouk! \uD83C\uDF89');
+        var eng = window._gameEngine;
+        if(eng && eng.runSocketCaptureFly) eng.runSocketCaptureFly(data);
     });
 
     // ── Disconnection handling ────────────────────────────────────────────
@@ -2186,8 +2576,18 @@ document.addEventListener('DOMContentLoaded', function(){
     if(ropBtn){
         ropBtn.addEventListener('click', function(){
             var _roomId = window.location.pathname.match(/\/play\/([^\/]+)/);
-            if(_roomId) window.location.href = '/play/' + _roomId[1] + '?next_round=1';
-            else window.location.reload();
+            // Use SocketIO for multiplayer (1v1), page reload for solo bot rooms
+            var _ps = null;
+            try{ var _el = document.getElementById('page-state'); if(_el) _ps = JSON.parse(_el.textContent); }catch(_e){}
+            if(_ps && _ps.game_mode === '1v1' && window.Game && window.Game.socket && window.Game.socket.connected){
+                window.Game.socket.emit('request_next_round', { room_id: _ps.room_id });
+                ropBtn.disabled = true;
+                ropBtn.textContent = 'Starting\u2026';
+            } else if(_roomId) {
+                window.location.href = '/play/' + _roomId[1] + '?next_round=1';
+            } else {
+                window.location.reload();
+            }
         });
     }
 });

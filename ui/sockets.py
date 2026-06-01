@@ -61,7 +61,7 @@ BOT_THINKING_DELAY: float = (
 )
 # Solo: first bot move after opening deal — lets the client show table → deal → pause
 # before the server emits the pending-card snapshot (aligns with index.html UX).
-SOLO_OPENING_BOT_DELAY_S: float = float(os.environ.get("SOLO_OPENING_BOT_DELAY_S", "2.2"))
+SOLO_OPENING_BOT_DELAY_S: float = float(os.environ.get("SOLO_OPENING_BOT_DELAY_S", "1.8"))
 
 
 def _next_seq(room_id: str) -> int:
@@ -661,16 +661,14 @@ def on_cut_choice(data: dict):
         emit("error", {"message": "Cut choice rejected"})
         return
 
-    seq = _next_seq(room_id)
     is_mp = manager.mode == "1v1"
     if is_mp:
         vd0 = manager.view_data(viewer_seat=0)
         vd1 = manager.view_data(viewer_seat=1)
-        vd0["seq"] = vd1["seq"] = seq
         _emit_private_snapshots(room_id, {0: vd0, 1: vd1})
     else:
         vd = manager.view_data()
-        vd["seq"] = seq
+        vd["seq"] = _next_seq(room_id)
         emit("state_snapshot", vd)
 
     if manager.phase == GamePhase.BOT_MOVING and manager.pending_bot_move:
@@ -694,6 +692,41 @@ def on_request_resync(data: dict):
     vd["seq"] = _room_seqs.get(room_id, 0)
     emit("state_snapshot", vd)
     logger.info("[socket] resync  room=%.8s  seat=%s", room_id, my_seat)
+
+
+@socketio.on("request_next_round")
+def on_request_next_round(data: dict):
+    """Client requests the next round after round_over (multiplayer or solo bot)."""
+    room_id = data.get("room_id") or _sid_to_room.get(request.sid)
+    if not room_id:
+        return
+
+    try:
+        manager = GameManager.load(room_id, app.game_store)
+    except RoomNotFoundError:
+        emit("error", {"message": "Room not found"})
+        return
+
+    if manager.phase != GamePhase.ROUND_OVER:
+        emit("error", {"message": "Round is not over"})
+        return
+
+    manager.next_round()
+
+    is_mp = manager.mode == "1v1"
+    if is_mp:
+        vd0 = manager.view_data(viewer_seat=0)
+        vd1 = manager.view_data(viewer_seat=1)
+        _emit_private_snapshots(room_id, {0: vd0, 1: vd1})
+    else:
+        vd = manager.view_data()
+        vd["seq"] = _next_seq(room_id)
+        socketio.emit("state_snapshot", vd, to=room_id)
+
+    if manager.phase == GamePhase.BOT_MOVING and manager.pending_bot_move:
+        socketio.start_background_task(_run_bot_turn, room_id, app.game_store)
+
+    logger.info("[socket] next_round  room=%.8s  mode=%s", room_id, manager.mode)
 
 
 # ---------------------------------------------------------------------------
@@ -765,7 +798,9 @@ def _emit_private_snapshots(room_id: str, private_views: dict) -> None:
     for seat_idx, vd in private_views.items():
         sid = _seat_to_sid(room_id, seat_idx, blob)
         if sid:
-            socketio.emit("state_snapshot", vd, to=sid)
+            out = dict(vd)
+            out["seq"] = _next_seq(room_id)
+            socketio.emit("state_snapshot", out, to=sid)
 
 
 def _emit_state_snapshot_after_move(
@@ -829,7 +864,37 @@ def _emit_play_events(
             to=room_id,
         )
 
-    socketio.sleep(0.12)
+    # Gap before score/turn/snapshot so capture-fly can clone table DOM elements.
+    socketio.sleep(0.55 if move_info["is_capture"] else 0.12)
+
+    if view_data.get("match_over"):
+        seq2 = _next_seq(room_id)
+        _record_match_result(room_id, view_data, was_forfeit=False)
+        socketio.emit(
+            "match_over",
+            {
+                "winner_seat":  view_data.get("match_winner"),
+                "final_scores": view_data.get("match_scores"),
+                "seq":          seq2,
+            },
+            to=room_id,
+        )
+        _emit_state_snapshot_after_move(room_id, view_data, private_views)
+        return
+
+    if view_data.get("round_over"):
+        seq2 = _next_seq(room_id)
+        socketio.emit(
+            "round_over",
+            {
+                "breakdown": view_data.get("round_breakdown", []),
+                "scores":    view_data.get("match_scores"),
+                "seq":       seq2,
+            },
+            to=room_id,
+        )
+        _emit_state_snapshot_after_move(room_id, view_data, private_views)
+        return
 
     seq2 = _next_seq(room_id)
     socketio.emit(
@@ -843,37 +908,6 @@ def _emit_play_events(
         to=room_id,
     )
 
-    socketio.sleep(0.12)
-
-    if view_data.get("match_over"):
-        seq3 = _next_seq(room_id)
-        _record_match_result(room_id, view_data, was_forfeit=False)
-        socketio.emit(
-            "match_over",
-            {
-                "winner_seat":  view_data.get("match_winner"),
-                "final_scores": view_data.get("match_scores"),
-                "seq":          seq3,
-            },
-            to=room_id,
-        )
-        _emit_state_snapshot_after_move(room_id, view_data, private_views)
-        return
-
-    if view_data.get("round_over"):
-        seq3 = _next_seq(room_id)
-        socketio.emit(
-            "round_over",
-            {
-                "breakdown": view_data.get("round_breakdown", []),
-                "scores":    view_data.get("match_scores"),
-                "seq":       seq3,
-            },
-            to=room_id,
-        )
-        _emit_state_snapshot_after_move(room_id, view_data, private_views)
-        return
-
     seq3 = _next_seq(room_id)
     socketio.emit(
         "turn_changed",
@@ -881,13 +915,15 @@ def _emit_play_events(
         to=room_id,
     )
 
-    socketio.sleep(0.12)
-
     # Full state snapshot — private per-seat in multiplayer, broadcast in solo.
+    # IMPORTANT: use a fresh seq so the client doesn't dedupe-delta-drop this
+    # authoritative snapshot (view_data.seq was set before the delta seqs above).
     if private_views:
         _emit_private_snapshots(room_id, private_views)
     else:
-        socketio.emit("state_snapshot", view_data, to=room_id)
+        out = dict(view_data)
+        out["seq"] = _next_seq(room_id)
+        socketio.emit("state_snapshot", out, to=room_id)
 
 
 def _bg_human_play(
@@ -899,24 +935,26 @@ def _bg_human_play(
     store,
     private_views: dict | None = None,
 ) -> None:
-    """Background task: emit human-play delta events, then optionally run bot."""
-    _emit_play_events(room_id, seat, move_info, view_data, private_views)
+    """Background task: emit human-play delta events; bot thinking overlaps."""
+    # Start bot thinking immediately so it runs in parallel with the
+    # human delta chain.  The bot's long sleep (~0.8s / ~2.2s) ensures
+    # its events never interleave with the human's.
     if needs_bot:
-        _run_bot_turn(room_id, store)
+        socketio.start_background_task(_run_bot_turn, room_id, store)
+    _emit_play_events(room_id, seat, move_info, view_data, private_views)
 
 
 def _run_bot_turn(room_id: str, store) -> None:
     """Background task: wait (thinking delay), apply bot move, emit events.
 
     Only used in solo mode — 1v1 rooms never call this.
+
+    Timing strategy:
+      - First move of the round: sleep SOLO_OPENING_BOT_DELAY_S (~3.2s) to let
+        the client deal animation finish.  The bot "thinks" during this time so
+        there is no extra thinking delay stacked on top.
+      - Subsequent moves: sleep BOT_THINKING_DELAY (~0.8s).
     """
-    socketio.sleep(BOT_THINKING_DELAY)
-
-    seq = _next_seq(room_id)
-    socketio.emit("bot_thinking", {"seat": 1, "seq": seq}, to=room_id)
-
-    socketio.sleep(0.15)
-
     try:
         manager = GameManager.load(room_id, store)
     except RoomNotFoundError:
@@ -927,24 +965,39 @@ def _run_bot_turn(room_id: str, store) -> None:
         logger.warning("[bot_turn] no pending move in room %.8s", room_id)
         return
 
-    # First move of the round in solo: client shows table, deal animation, then pause.
-    if (
+    is_first_move = (
         manager.mode == "solo"
         and manager.state
         and len(manager.state.move_history) == 0
-    ):
-        socketio.sleep(SOLO_OPENING_BOT_DELAY_S)
+    )
 
-    # Emit a pre-play snapshot so clients can show the bot's chosen card in the
-    # opponent hand zone (pending_bot_played_card) before it hits the table.
-    # This restores the classic "thinking -> reveal -> play" flow in solo mode.
+    if is_first_move:
+        socketio.sleep(SOLO_OPENING_BOT_DELAY_S)
+    else:
+        socketio.sleep(BOT_THINKING_DELAY)
+
+    # Re-load manager after the long sleep and hold the per-room lock so the
+    # load→commit→save cycle is atomic against other greenlets (e.g. AJAX).
+    store.acquire_room(room_id)
     try:
-        vd_pending = manager.view_data()
-        vd_pending["seq"] = _next_seq(room_id)
-        socketio.emit("state_snapshot", vd_pending, to=room_id)
-    except Exception:
-        # Best effort only; game logic continues even if preview emit fails.
-        logger.exception("[bot_turn] failed to emit pending snapshot  room=%.8s", room_id)
+        manager = GameManager.load(room_id, store)
+    except RoomNotFoundError:
+        logger.warning("[bot_turn] room %.8s gone from store (reload)", room_id)
+        store.release_room(room_id)
+        return
+
+    if not manager.pending_bot_move:
+        logger.warning("[bot_turn] no pending move after sleep in room %.8s", room_id)
+        store.release_room(room_id)
+        return
+
+    seq = _next_seq(room_id)
+    socketio.emit("bot_thinking", {"seat": 1, "seq": seq}, to=room_id)
+
+    socketio.sleep(0.15)
+
+    # The initial state_snapshot already carries pending_bot_played_card /
+    # has_pending_bot — no need for a second pending snapshot here.
 
     socketio.sleep(0.28)
 
@@ -954,12 +1007,13 @@ def _run_bot_turn(room_id: str, store) -> None:
     played_card_str = card_to_str(bot_move.played_card)
     captured_strs   = [card_to_str(c) for c in bot_move.captured_cards]
 
-    manager.commit_bot_move()   # saves to store internally
+    manager.commit_bot_move()   # saves to store internally (lock still held)
 
     is_chkobba = manager.state.players[manager.bot_id].chkobbas > pre_chk
 
     vd = manager.view_data()
-    vd["seq"] = _next_seq(room_id)
+    # Don't bump seq here — _emit_play_events handles delta seqs + final snapshot.
+    # Set a temporary seq so the emit calls in _emit_play_events work correctly.
 
     move_info = _make_move_info(
         played_card_str=played_card_str,
@@ -970,6 +1024,8 @@ def _run_bot_turn(room_id: str, store) -> None:
         chkobbas=manager.state.players[manager.bot_id].chkobbas,
         next_seat=manager.state.current_player if manager.state else 0,
     )
+
+    store.release_room(room_id)
 
     socketio.sleep(0.3)
     _emit_play_events(room_id, manager.bot_id, move_info, vd)
@@ -1079,6 +1135,9 @@ def _start_bot_game(room_id: str, store) -> None:
         vd = manager.view_data()
         vd["seq"] = _room_seqs.get(room_id, 0)
         socketio.emit("state_snapshot", vd, to=sid)
+
+    if manager.phase == GamePhase.BOT_MOVING and manager.pending_bot_move:
+        socketio.start_background_task(_run_bot_turn, room_id, store)
 
     logger.info("[bot_game] started  room=%.8s  target=%d", room_id, target_score)
 

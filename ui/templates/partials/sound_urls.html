@@ -1,0 +1,24 @@
+{# Versioned sound asset URLs + tiny helper (include once per page before card SFX). #}
+<script>
+window.CHK_SOUND_URLS={{ {
+    "tak": static_url("sounds/tak.wav"),
+    "play": static_url("sounds/cards/play-card.mp3"),
+    "capture": static_url("sounds/cards/capture.mp3"),
+    "dealing_start": static_url("sounds/cards/dealing-start.mp3"),
+    "dealing_middle": static_url("sounds/cards/dealing-middle.mp3"),
+    "bg_cafe": static_url("sounds/background/bustling-cafe-ambience-27898.mp3"),
+    "bg_oud": static_url("sounds/background/oud-c-arabian-400521.mp3"),
+    "bg_shisha": static_url("sounds/background/shisha-bubbling-47717.mp3"),
+    "bg_tea": static_url("sounds/background/pouring-tea-70635.mp3")
+} | tojson }};
+window._chkAudio=function(key,vol){
+    var u=window.CHK_SOUND_URLS&&window.CHK_SOUND_URLS[key];
+    if(!u)return null;
+    try{
+        var a=new Audio(u);
+        if(vol!=null)a.volume=vol;
+        a.onerror=function(){};
+        return a;
+    }catch(e){return null;}
+};
+</script>

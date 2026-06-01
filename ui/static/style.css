@@ -874,7 +874,7 @@ html.chk-opp-first-boot #bot-cards {
 /* Graceful fallback fade-in when FLIP data is absent (e.g. first load, captures).
    The FLIP script suppresses this with animation:none when it runs instead. */
 .table-card.fly-from-human,
-.table-card.fly-from-bot   { animation: cardAppear .25s ease; }
+.table-card.fly-from-bot   { /* FLIP in scatterAndFlip handles motion when snap is present */ }
 @keyframes cardAppear { from { opacity:0; transform-origin:center; scale:.92; }
                         to   { opacity:1; scale:1; } }
 

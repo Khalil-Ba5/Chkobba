@@ -52,10 +52,14 @@
 
     _wireUp: function () {
       var self = this;
+      var hasConnected = false;
 
       this.socket.on('connect', function () {
+        // Reset delta dedup on reconnect so post-rejoin events are not dropped.
+        if (hasConnected) self.lastSeq = 0;
+        hasConnected = true;
+
         self._setStatus('connected');
-        // Join game room — server responds with state_snapshot
         self.socket.emit('game_join', { room_id: self.roomId });
       });
 
@@ -73,6 +77,7 @@
       this.socket.on('state_snapshot', function (data) {
         var eng = window._gameEngine;
         if (!eng) return;
+        try {
 
         // Save the previous state BEFORE overwriting it, so applyState can
         // diff old vs new table slots for the capture-fly animation.
@@ -81,23 +86,44 @@
         eng.setState(data);
         self.lastSeq = data.seq || 0;
 
+        // During deal / bot capture animation the init path owns card-zone DOM.
+        if ((eng.isDealing && eng.isDealing()) || (eng.isBotAnimating && eng.isBotAnimating())) {
+          eng.applyState(data, null, prevState);
+          return;
+        }
+
         var pred = eng._lastPredicted;
         if (pred) {
           eng._lastPredicted = null;
           // Prediction was applied optimistically; check if it matches server.
           if (eng.statesMatch && eng.statesMatch(pred, data)) {
-            // Match — only push non-predicted fields (commentary, bot hint, etc.)
             if (data.commentary_toast && window.showCommentaryToast)
               window.showCommentaryToast(data.commentary_toast);
+            // Human play confirmed — update bot-pending UI only (avoid full table rebuild).
+            if (data.has_pending_bot) {
+              if (eng.onServerConfirm) {
+                eng.onServerConfirm(data);
+              } else {
+                eng.applyState(data, null, prevState);
+              }
+              return;
+            }
+            if (data.round_over || data.match_over) {
+              eng.applyState(data, null, prevState);
+            }
             return;
+          } else {
+            // Mismatch — let reconcile() do a brief fade and re-render.
+            if (eng.reconcile) { eng.reconcile(data); return; }
           }
-          // Mismatch — let reconcile() do a brief fade and re-render.
-          if (eng.reconcile) { eng.reconcile(data); return; }
         }
 
         // No prediction pending — apply state directly, passing the previous
         // state so the capture animation can compare old vs new table cards.
         eng.applyState(data, null, prevState);
+        } finally {
+          if (eng.clearPlayBusy) eng.clearPlayBusy();
+        }
       });
 
       // ------------------------------------------------------------------
@@ -148,6 +174,10 @@
     _setStatus: function (status) {
       var dot = document.querySelector('.conn-dot');
       if (dot) dot.className = 'conn-dot ' + status;
+      var label = document.getElementById('conn-status-text');
+      if (label) {
+        label.textContent = status === 'connected' ? 'Connected' : 'Disconnected';
+      }
     }
   };
 

@@ -1295,6 +1295,7 @@ class GameManager:
             "round_breakdown": self.round_breakdown,
             "commentary_toast": self._consume_commentary(),
             "deck_remaining": len(self.state.deck),
+            "round_moves_played": 0,
             "room_id": self.room_id,
             "my_seat": viewer_seat,
             "game_mode": self.mode,
@@ -1495,6 +1496,9 @@ class GameManager:
 
             # Meta
             "deck_remaining": len(self.state.deck),
+
+            # Plays this round — client uses 0 vs >0 to tell opening deal from mid-round hand refresh.
+            "round_moves_played": len(self.state.move_history),
 
             # SocketIO routing
             "room_id": self.room_id,

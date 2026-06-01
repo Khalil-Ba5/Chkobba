@@ -67,6 +67,16 @@ class GameStore(ABC):
     def exists(self, room_id: str) -> bool:
         """Return True if the room is in the store."""
 
+    # ── Optional: per-room locking for safe load-modify-save cycles ────
+    # The base implementation is a no-op; memory backend overrides.
+    room_locks: dict[str, threading.Lock] = {}
+
+    def acquire_room(self, room_id: str) -> None:
+        """Acquire the per-room lock (reentrant).  No-op by default."""
+
+    def release_room(self, room_id: str) -> None:
+        """Release the per-room lock.  No-op by default."""
+
 
 # ---------------------------------------------------------------------------
 # In-memory backend  (dev / single worker)
@@ -82,6 +92,16 @@ class MemoryGameStore(GameStore):
     def __init__(self) -> None:
         self._store: dict[str, dict] = {}
         self._lock = threading.Lock()
+        self.room_locks: dict[str, threading.Lock] = {}
+
+    def acquire_room(self, room_id: str) -> None:
+        lock = self.room_locks.setdefault(room_id, threading.Lock())
+        lock.acquire()
+
+    def release_room(self, room_id: str) -> None:
+        lock = self.room_locks.get(room_id)
+        if lock:
+            lock.release()
 
     def get(self, room_id: str) -> Optional[dict]:
         with self._lock:
