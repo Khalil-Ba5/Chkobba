@@ -48,6 +48,12 @@ def init_models() -> None:
         cur.execute("ALTER TABLE guests ADD COLUMN avatar_key TEXT")
     except Exception:
         pass
+    try:
+        cur.execute(
+            "ALTER TABLE guests ADD COLUMN profile_setup_done INTEGER NOT NULL DEFAULT 1"
+        )
+    except Exception:
+        pass
 
     # ------------------------------------------------------------------
     # accounts — optional registered users.

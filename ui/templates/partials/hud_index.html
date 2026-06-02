@@ -1,0 +1,17 @@
+{# Same top bar on café reception and solo game. #}
+<header class="hud">
+    {% include 'partials/hud_brand.html' %}
+    <div class="hud-spacer"></div>
+    <nav class="hud-nav">
+        <span class="conn-dot" title="Connection status" aria-hidden="true"></span>
+        <span id="conn-status-text" class="sr-only" aria-live="polite"></span>
+        <div class="sound-wrap">
+            <button id="sound-btn" class="hud-icon-btn" title="Enable café sounds" aria-label="Toggle ambient sound">🔇</button>
+            <div class="sound-panel">
+                <input id="sound-slider" type="range" min="0" max="1" step="0.05" value="0.18" class="sound-slider" aria-label="Volume">
+                <button id="toast-toggle-btn" class="toast-toggle" title="Toggle commentary">💬</button>
+            </div>
+        </div>
+        {% include 'partials/hud_user_menu.html' %}
+    </nav>
+</header>

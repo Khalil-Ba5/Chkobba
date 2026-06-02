@@ -1,0 +1,151 @@
+<div id="leave-game-modal" class="leave-game-backdrop" role="dialog" aria-modal="true" aria-labelledby="leave-game-title" hidden>
+    <div class="leave-game-box" role="document">
+        <h2 id="leave-game-title" class="leave-game-title">Leave game?</h2>
+        <p id="leave-game-message" class="leave-game-message">Your current game will end if you go home.</p>
+        <div class="leave-game-actions">
+            <button type="button" class="btn-deal leave-game-stay" id="leave-game-stay">Keep playing</button>
+            <button type="button" class="btn-deal btn-secondary leave-game-go" id="leave-game-go">Leave</button>
+        </div>
+    </div>
+</div>
+
+<script>
+(function(){
+    var modal = document.getElementById('leave-game-modal');
+    if (!modal) return;
+
+    var msgEl = document.getElementById('leave-game-message');
+    var stayBtn = document.getElementById('leave-game-stay');
+    var goBtn = document.getElementById('leave-game-go');
+    var homeUrl = '/';
+
+    function getCSRF(){
+        var m = document.querySelector('meta[name="csrf-token"]');
+        return m ? m.getAttribute('content') : '';
+    }
+
+    function readPageState(){
+        var el = document.getElementById('page-state');
+        if (!el) return null;
+        try { return JSON.parse(el.textContent); } catch (e) { return null; }
+    }
+
+    function isWaitingRoom(){
+        var ws = document.getElementById('waiting-screen');
+        return !!(ws && !ws.classList.contains('hidden'));
+    }
+
+    function postRestart(){
+        if (goBtn) {
+            goBtn.disabled = true;
+            goBtn.textContent = 'Leaving…';
+        }
+        fetch('/api/solo/leave', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({_csrf_token: getCSRF()}),
+        })
+        .then(function(r){ return r.json().then(function(d){ return {ok: r.ok, data: d}; }); })
+        .then(function(res){
+            if (res.ok) {
+                window.location.replace(res.data.redirect || homeUrl);
+                return;
+            }
+            postRestartForm();
+        })
+        .catch(postRestartForm);
+    }
+
+    function postRestartForm(){
+        var form = document.createElement('form');
+        form.method = 'POST';
+        form.action = '/restart';
+        form.style.display = 'none';
+        var tok = document.createElement('input');
+        tok.type = 'hidden';
+        tok.name = '_csrf_token';
+        tok.value = getCSRF();
+        form.appendChild(tok);
+        document.body.appendChild(form);
+        form.submit();
+    }
+
+    function leavePlayRoom(ps){
+        if (isWaitingRoom() && ps.my_seat === 0) {
+            if (goBtn) {
+                goBtn.disabled = true;
+                goBtn.textContent = 'Leaving…';
+            }
+            fetch('/api/rooms/' + encodeURIComponent(ps.room_id) + '/cancel', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                credentials: 'same-origin',
+            }).then(function(r){ return r.json(); })
+              .then(function(d){ window.location.replace(d.redirect || '/lobby'); })
+              .catch(function(){ window.location.replace('/lobby'); });
+            return;
+        }
+        window.location.replace(homeUrl);
+    }
+
+    function doLeave(){
+        var ps = readPageState();
+        /* Solo vs bot on home: session keeps the game until /restart clears it. */
+        if (ps && ps.game_mode === 'solo') {
+            var onPlay = /^\/play\//.test(window.location.pathname);
+            if (onPlay) {
+                window.location.replace(homeUrl);
+            } else {
+                postRestart();
+            }
+            return;
+        }
+        if (ps && ps.room_id && ps.room_id !== '__no_room__') {
+            leavePlayRoom(ps);
+            return;
+        }
+        postRestart();
+    }
+
+    function setMessage(ps){
+        if (!msgEl) return;
+        if (!ps || !ps.room_id || ps.room_id === '__no_room__') {
+            msgEl.textContent = 'Leave this game? Your progress against the bot will be lost.';
+            return;
+        }
+        if (isWaitingRoom()) {
+            msgEl.textContent = ps.my_seat === 0
+                ? 'Cancel this room and return home?'
+                : 'Leave the waiting room and go home?';
+            return;
+        }
+        if (ps.match_over) {
+            msgEl.textContent = 'Return to the home screen?';
+            return;
+        }
+        msgEl.textContent = 'Leave this match? You may forfeit the game for your opponent.';
+    }
+
+    function close(){ modal.hidden = true; }
+
+    function open(){
+        var link = document.getElementById('hud-brand-link');
+        if (link && link.dataset.home) homeUrl = link.dataset.home;
+        setMessage(readPageState());
+        if (goBtn) { goBtn.disabled = false; goBtn.textContent = 'Leave'; }
+        modal.hidden = false;
+    }
+
+    window.openLeaveGameModal = open;
+
+    if (stayBtn) stayBtn.addEventListener('click', close);
+    if (goBtn) goBtn.addEventListener('click', function(){
+        doLeave();
+    });
+    modal.addEventListener('click', function(e){ if (e.target === modal) close(); });
+    document.addEventListener('keydown', function(e){
+        if (e.key === 'Escape' && !modal.hidden) close();
+    });
+})();
+</script>

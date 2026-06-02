@@ -14,21 +14,46 @@ from .db import get_connection
 logger = logging.getLogger(__name__)
 
 
-def ensure_guest(guest_id: str, display_name: str = "Guest") -> None:
+def ensure_guest(
+    guest_id: str,
+    display_name: str = "Guest",
+    *,
+    profile_setup_done: int = 1,
+) -> None:
     """Insert a guest row if it doesn't already exist (idempotent)."""
     try:
         conn = get_connection()
         conn.execute(
             """
-            INSERT OR IGNORE INTO guests (guest_id, display_name, created_at)
-            VALUES (?, ?, ?)
+            INSERT OR IGNORE INTO guests
+                (guest_id, display_name, created_at, profile_setup_done)
+            VALUES (?, ?, ?, ?)
             """,
-            (guest_id, display_name, datetime.now(timezone.utc).isoformat()),
+            (
+                guest_id,
+                display_name,
+                datetime.now(timezone.utc).isoformat(),
+                1 if profile_setup_done else 0,
+            ),
         )
         conn.commit()
         conn.close()
     except Exception:
         logger.exception("Failed to ensure guest %s", guest_id)
+
+
+def mark_profile_setup_done(guest_id: str) -> None:
+    """Mark that the guest completed the first-time name/avatar setup."""
+    try:
+        conn = get_connection()
+        conn.execute(
+            "UPDATE guests SET profile_setup_done = 1 WHERE guest_id = ?",
+            (guest_id,),
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        logger.exception("Failed to mark profile setup for guest %s", guest_id)
 
 
 def get_guest(guest_id: str) -> Optional[dict]:

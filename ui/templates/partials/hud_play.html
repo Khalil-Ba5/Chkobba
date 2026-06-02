@@ -1,0 +1,11 @@
+{# Same layout as reception: brand + account menu (plus lobby link on play). #}
+<header class="hud">
+    {% include 'partials/hud_brand.html' %}
+    <div class="hud-spacer"></div>
+    <nav class="hud-nav">
+        <span class="conn-dot" title="Connection status" aria-hidden="true"></span>
+        <span id="conn-status-text" class="sr-only" aria-live="polite"></span>
+        <a href="{{ url_for('lobby') }}" class="hud-btn">Lobby</a>
+        {% include 'partials/hud_user_menu.html' %}
+    </nav>
+</header>

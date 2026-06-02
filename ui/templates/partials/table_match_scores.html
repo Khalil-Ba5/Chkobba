@@ -1,0 +1,17 @@
+{# Match scores above the table (not in the top HUD). #}
+<div class="table-match-scores" id="table-match-scores" aria-label="Match score">
+    <div class="table-score table-score-you">
+        <span class="table-score-lbl">You</span>
+        <span class="table-score-val" id="table-score-you">{{ match_scores[0] if match_scores is defined else 0 }}</span>
+    </div>
+    <div class="table-score table-score-target">
+        <span class="table-score-lbl">Target</span>
+        <span class="table-score-val table-score-val-gold" id="table-score-target">{{ target_score|default(blob.target_score_mp|default(11) if blob is defined else 11) }}</span>
+    </div>
+    <div class="table-score table-score-opp">
+        <span class="table-score-lbl">
+            <span class="table-opp-name hs-name-text" id="table-opp-name">{{ bot_name|default('Opponent') }}</span>
+        </span>
+        <span class="table-score-val" id="table-score-opp">{{ match_scores[1] if match_scores is defined else 0 }}</span>
+    </div>
+</div>

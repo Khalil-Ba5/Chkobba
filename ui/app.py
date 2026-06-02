@@ -245,7 +245,7 @@ def _ensure_guest_session() -> None:
         guest_id = secrets.token_hex(16)
         session["guest_id"] = guest_id
         name = generate_display_name()
-        _ensure_guest(guest_id, display_name=name)
+        _ensure_guest(guest_id, display_name=name, profile_setup_done=0)
         session["display_name"] = name
         if is_valid_player_avatar_key(DEFAULT_PLAYER_AVATAR_KEY):
             session["avatar_key"] = DEFAULT_PLAYER_AVATAR_KEY
@@ -581,6 +581,10 @@ def _apply_guest_profile(ctx: dict) -> None:
     ctx["avatar_key"] = avatar_key
     ctx["human_avatar_url"] = _player_avatar_url(avatar_key)
     ctx["player_avatar_options"] = _player_avatar_options()
+    guest = _get_guest(gid) if gid else None
+    ctx["needs_profile_setup"] = bool(
+        guest and not int(guest.get("profile_setup_done") or 0)
+    )
 
 
 def _guest_profile_kwargs() -> dict:
@@ -2178,6 +2182,9 @@ def api_update_name():
 
     _update_display_name(guest_id, name)
     session["display_name"] = name
+    from models.guests import mark_profile_setup_done
+
+    mark_profile_setup_done(guest_id)
     _sync_guest_profile_to_rooms(guest_id, name, avatar_key)
     logger.info("Guest %.8s changed name to %r avatar=%r", guest_id, name, avatar_key)
     return jsonify({
@@ -3160,6 +3167,20 @@ def api_cancel_room(room_id: str):
     if blob.get("visibility") == "public":
         socketio.emit("lobby_update", {"action": "remove", "room_id": room_id}, to="lobby")
     return jsonify({"ok": True, "redirect": url_for("lobby")})
+
+
+@app.route("/api/solo/leave", methods=["POST"])
+def api_solo_leave():
+    """End the browser's solo bot game and return to the home screen."""
+    _ensure_guest_session()
+    data = request.get_json(force=True, silent=True) or {}
+    token = session.get("_csrf_token")
+    if not token or not hmac.compare_digest(token, str(data.get("_csrf_token", ""))):
+        return jsonify({"error": "Invalid CSRF token"}), 403
+    room_id = session.pop("solo_room_id", None)
+    if room_id:
+        app.game_store.delete(room_id)
+    return jsonify({"ok": True, "redirect": url_for("index")})
 
 
 @app.route("/restart", methods=["POST"])

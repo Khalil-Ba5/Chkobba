@@ -1309,11 +1309,69 @@ html.chk-opp-first-boot #bot-cards {
     margin: 0;
     width: 100%;
 }
+.table-status-bar {
+    width: 100%;
+    max-width: 800px;
+    margin: 0 auto .35rem;
+    padding: 0 .5rem;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: .35rem;
+    flex-shrink: 0;
+}
+.table-match-scores {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: .5rem;
+    flex-wrap: wrap;
+    width: 100%;
+}
+.table-score {
+    display: flex;
+    align-items: center;
+    gap: .35rem;
+    padding: .28rem .7rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    font-size: .78rem;
+}
+.table-score-lbl {
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: .05em;
+    font-weight: 600;
+    font-size: .68rem;
+}
+.table-score-val {
+    font-weight: 800;
+    font-size: .95rem;
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+}
+.table-score-you .table-score-val { color: var(--green); }
+.table-score-opp .table-score-val { color: var(--orange); }
+.table-score-val-gold { color: var(--gold); }
+.table-opp-name {
+    font-weight: 600;
+    text-transform: none;
+    letter-spacing: 0;
+    color: var(--text);
+    font-size: .78rem;
+    max-width: 8rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
 .selection-hint {
     color: var(--muted);
     font-size: .85rem;
     line-height: 1.35;
-    flex: 1;
+    text-align: center;
+    margin: 0;
+    width: 100%;
 }
 
 /* ════════════════════════════════════════
@@ -1577,6 +1635,15 @@ html.chk-opp-first-boot #bot-cards {
     font-family: 'Cinzel', serif; font-size: 1.1rem; color: var(--gold-light);
     margin: 0; letter-spacing: .08em;
 }
+.name-modal-lead {
+    margin: -.35rem 0 0;
+    font-size: .88rem;
+    color: var(--muted);
+    text-align: center;
+    line-height: 1.4;
+    max-width: 18rem;
+}
+.name-modal-welcome { z-index: 650; }
 .name-modal-avatar {
     width: 52px; height: 52px; border-radius: 50%;
     display: flex; align-items: center; justify-content: center;
@@ -2865,3 +2932,47 @@ html.chk-opp-first-boot #bot-cards {
     font-size: .85rem;
     margin: .5rem 0 0;
 }
+
+/* ── Leave game confirm ───────────────────────────────────────────── */
+.leave-game-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 600;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+    background: rgba(0,0,0,.55);
+    backdrop-filter: blur(4px);
+}
+.leave-game-backdrop[hidden] { display: none !important; }
+.leave-game-box {
+    width: min(22rem, 100%);
+    padding: 1.35rem 1.4rem 1.25rem;
+    background: linear-gradient(165deg, #2a1810, #1a0f08);
+    border: 1px solid rgba(212, 175, 55, .4);
+    border-radius: 14px;
+    box-shadow: 0 12px 36px rgba(0,0,0,.5);
+    text-align: center;
+}
+.leave-game-title {
+    font-family: 'Cinzel', serif;
+    font-size: 1.1rem;
+    color: var(--gold);
+    margin: 0 0 .65rem;
+}
+.leave-game-message {
+    font-size: .9rem;
+    color: var(--muted);
+    line-height: 1.45;
+    margin: 0 0 1.1rem;
+}
+.leave-game-actions {
+    display: flex;
+    gap: .5rem;
+    justify-content: center;
+    flex-wrap: wrap;
+}
+.leave-game-actions .btn-deal { min-width: 7rem; }
+.leave-game-stay { order: 1; }
+.leave-game-go { order: 2; }

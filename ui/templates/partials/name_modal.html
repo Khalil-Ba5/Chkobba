@@ -1,7 +1,10 @@
 {% from 'partials/player_avatar.html' import player_avatar %}
-<div id="name-modal" class="name-modal-backdrop" role="dialog" aria-modal="true" aria-label="Change your name" hidden>
-    <div class="name-modal-box">
-        <h2 class="name-modal-title">Your profile</h2>
+<div id="name-modal" class="name-modal-backdrop{% if needs_profile_setup|default(false) %} name-modal-welcome{% endif %}" role="dialog" aria-modal="true" aria-label="{% if needs_profile_setup|default(false) %}Set up your profile{% else %}Change your name{% endif %}" hidden>
+    <div class="name-modal-box" role="document">
+        <h2 class="name-modal-title" id="name-modal-title">{% if needs_profile_setup|default(false) %}Welcome to Chkobba{% else %}Your profile{% endif %}</h2>
+        {% if needs_profile_setup|default(false) %}
+        <p class="name-modal-lead" id="name-modal-lead">Choose a display name and avatar before you play.</p>
+        {% endif %}
         {% if player_avatar_options %}
         <div class="avatar-picker" id="avatar-picker" role="radiogroup" aria-label="Choose avatar">
             {% for opt in player_avatar_options %}
@@ -20,8 +23,8 @@
                value="{{ display_name }}" aria-label="Display name">
         <p id="name-modal-error" class="name-modal-error" hidden></p>
         <div class="name-modal-actions">
-            <button id="name-modal-save" class="btn-deal name-modal-save">Save</button>
-            <button id="name-modal-cancel" class="name-modal-cancel">Cancel</button>
+            <button id="name-modal-save" class="btn-deal name-modal-save">{% if needs_profile_setup|default(false) %}Continue{% else %}Save{% endif %}</button>
+            <button id="name-modal-cancel" class="name-modal-cancel"{% if needs_profile_setup|default(false) %} hidden{% endif %}>Cancel</button>
         </div>
     </div>
 </div>
@@ -33,9 +36,11 @@
     var input   = document.getElementById('name-modal-input');
     var errEl   = document.getElementById('name-modal-error');
     var saveBtn = document.getElementById('name-modal-save');
+    var cancelBtn = document.getElementById('name-modal-cancel');
     var preview = document.getElementById('name-modal-avatar-preview');
     var picker  = document.getElementById('avatar-picker');
     var selectedAvatarKey = {{ avatar_key|default(none)|tojson }};
+    var isWelcome = {{ needs_profile_setup|default(false)|tojson }};
 
     function avatarImgClassForSlot(el){
         if(!el) return 'avatar-hs';
@@ -91,10 +96,11 @@
 
     function open(){
         errEl.hidden = true;
-        input.value = (document.getElementById('zone-display-name') ||
-                       document.querySelector('.hud-user-name') ||
-                       document.querySelector('.hs-name-text') ||
-                       {textContent:''}).textContent.trim();
+        var seed = (document.getElementById('zone-display-name') ||
+                    document.querySelector('.hud-user-name') ||
+                    document.querySelector('.hs-name-text') ||
+                    {textContent:''}).textContent.trim();
+        if (seed) input.value = seed;
         modal.hidden = false;
         syncPickerSelection();
         previewFromSelection(input.value.trim());
@@ -102,9 +108,26 @@
         input.select();
     }
 
-    function close(){ modal.hidden = true; }
+    function close(){
+        if (isWelcome) return;
+        modal.hidden = true;
+    }
+
+    function finishWelcome(){
+        isWelcome = false;
+        modal.classList.remove('name-modal-welcome');
+        var title = document.getElementById('name-modal-title');
+        var lead = document.getElementById('name-modal-lead');
+        if (title) title.textContent = 'Your profile';
+        if (lead) lead.remove();
+        if (saveBtn) saveBtn.textContent = 'Save';
+        if (cancelBtn) cancelBtn.hidden = false;
+        modal.hidden = true;
+    }
 
     function showError(msg){ errEl.textContent = msg; errEl.hidden = false; }
+
+    window.openNameModal = open;
 
     if(picker){
         picker.addEventListener('click', function(e){
@@ -125,7 +148,7 @@
         if(e.target === modal) close();
     });
 
-    document.getElementById('name-modal-cancel').addEventListener('click', close);
+    if (cancelBtn) cancelBtn.addEventListener('click', close);
 
     if(input) input.addEventListener('keydown', function(e){
         if(e.key === 'Enter')  saveBtn.click();
@@ -160,10 +183,22 @@
             document.querySelectorAll('.landing-player-name').forEach(function(el){ el.textContent = name; });
             refreshHumanAvatars(res.data);
             if (res.data.guest_id) localStorage.setItem('chk_guest_id', res.data.guest_id);
-            close();
+            if (isWelcome) finishWelcome();
+            else close();
         })
         .catch(function(){ showError('Network error — try again.'); })
         .finally(function(){ saveBtn.disabled = false; });
     });
+
+    if (isWelcome) {
+        function showWelcome(){
+            open();
+        }
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', showWelcome);
+        } else {
+            showWelcome();
+        }
+    }
 })();
 </script>

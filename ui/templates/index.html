@@ -25,56 +25,7 @@
 {% from 'partials/player_avatar.html' import player_avatar %}
 <div id="syncing-dot" aria-hidden="true"></div>
 
-<!-- ════════════════ HUD ════════════════ -->
-<header class="hud">
-    {% include 'partials/hud_brand.html' %}
-
-    {% if not show_start_screen|default(false) %}
-    <div class="hud-scores">
-        <div class="hud-score you">
-            <span class="hs-label">You</span>
-            <span class="hs-val">{{ match_scores[0] }}</span>
-        </div>
-        {% if target_score %}
-        <div class="hud-score target">
-            <span class="hs-label">Target</span>
-            <span class="hs-val gold">{{ target_score }}</span>
-        </div>
-        {% endif %}
-        <div class="hud-score bot">
-            <span class="hs-label opp-hs-label">
-                {% if bot_avatar_url %}{{ player_avatar('', '', bot_avatar_url, false, 'avatar-hs') }}{% endif %}
-                <span class="hs-name-text">{{ bot_name|default('Bot') }}</span>
-            </span>
-            <span class="hs-val">{{ match_scores[1] }}</span>
-        </div>
-    </div>
-    {% else %}
-    <div class="hud-spacer"></div>
-    {% endif %}
-
-    <nav class="hud-nav">
-        <span class="conn-dot" title="Connection status" aria-hidden="true"></span>
-        <span id="conn-status-text" class="sr-only" aria-live="polite"></span>
-        <div class="sound-wrap">
-            <button id="sound-btn" class="hud-icon-btn" title="Enable café sounds" aria-label="Toggle ambient sound">🔇</button>
-            <div class="sound-panel">
-                <input id="sound-slider" type="range" min="0" max="1" step="0.05" value="0.18" class="sound-slider" aria-label="Volume">
-                <button id="toast-toggle-btn" class="toast-toggle" title="Toggle commentary">💬</button>
-            </div>
-        </div>
-        {% if not show_start_screen %}
-        <a href="{{ url_for('index', debug=1 if not debug else 0) }}" class="hud-icon-btn" title="Debug">
-            <span class="{% if debug %}dbg-active{% endif %}">⚙</span>
-        </a>
-        <form action="{{ url_for('restart') }}" method="post" class="inl">
-            <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
-            <button class="hud-btn">Menu</button>
-        </form>
-        {% endif %}
-        {% include 'partials/hud_user_menu.html' %}
-    </nav>
-</header>
+{% include 'partials/hud_index.html' %}
 
 <!-- Flash -->
 {% with msgs = get_flashed_messages() %}
@@ -158,7 +109,10 @@
 {% else %}
 <!-- ════════════════ GAME BOARD ════════════════ -->
 <div class="game-shell">
-<p id="selection-hint" class="selection-hint" aria-live="polite">{% if awaiting_cut_choice|default(false) %}{% if is_opening_cutter|default(false) %}Choose: keep the cut card in hand or place it on the table.{% else %}Waiting for the dealer to finish the cut…{% endif %}{% elif opp_first_js_deal|default(false) %}Dealing cards…{% else %}Tap a card in your hand to play{% endif %}</p>
+<div class="table-status-bar" id="table-status-bar">
+    {% include 'partials/table_match_scores.html' %}
+    <p id="selection-hint" class="selection-hint" aria-live="polite">{% if awaiting_cut_choice|default(false) %}{% if is_opening_cutter|default(false) %}Choose: keep the cut card in hand or place it on the table.{% else %}Waiting for the dealer to finish the cut…{% endif %}{% elif opp_first_js_deal|default(false) %}Dealing cards…{% endif %}</p>
+</div>
 <div class="board{% if human_is_current and not round_over and not has_pending_bot %} player-active{% elif not round_over and not has_pending_bot and not human_is_current %} bot-active{% elif has_pending_bot %} bot-active{% endif %}" role="application" aria-label="Chkobba table">
 
     <!-- ── Turn announcement (screen-reader only) ── -->
@@ -854,8 +808,8 @@ function onServerConfirm(serverState){
 function _applyHudOnly(st, human){
     var board = document.querySelector('.board');
     if(board){ board.classList.toggle('player-active', human); board.classList.toggle('bot-active', !human); }
-    var hudY = document.querySelector('.hud-score.you .hs-val');
-    var hudB = document.querySelector('.hud-score.bot .hs-val');
+    var hudY = document.getElementById('table-score-you');
+    var hudB = document.getElementById('table-score-opp');
     if(hudY) hudY.textContent = st.match_scores[0];
     if(hudB) hudB.textContent = st.match_scores[1];
     var moodEl = document.querySelector('.bot-mood');
@@ -1255,7 +1209,7 @@ function _onDealAnimationDone(fallbackSt, scheduleBotAjax){
     var hintEl = document.getElementById('selection-hint');
     if(hintEl && !live.awaiting_cut_choice){
         if(live.has_pending_bot) hintEl.textContent = 'Bot is playing…';
-        else hintEl.textContent = !live.human_is_current ? 'Bot is thinking…' : 'Tap a card in your hand to play';
+        else hintEl.textContent = !live.human_is_current ? 'Bot is thinking…' : '';
     }
     var bStEl = document.querySelector('.opp-zone .zone-status');
     if(bStEl && !live.awaiting_cut_choice){
@@ -1791,10 +1745,12 @@ function applyState(st, snap, prevState){
     if(board){ board.classList.toggle('player-active',human); board.classList.toggle('bot-active',!human); }
 
     // HUD match scores
-    var hudY=document.querySelector('.hud-score.you .hs-val');
-    var hudB=document.querySelector('.hud-score.bot .hs-val');
+    var hudY=document.getElementById('table-score-you');
+    var hudB=document.getElementById('table-score-opp');
     if(hudY) hudY.textContent=st.match_scores[0];
     if(hudB) hudB.textContent=st.match_scores[1];
+    var tableOpp=document.getElementById('table-opp-name');
+    if(tableOpp && st.bot_name) tableOpp.textContent=st.bot_name;
 
     // Bot mood + stats + status badge
     var moodEl=document.querySelector('.bot-mood');
@@ -1849,7 +1805,7 @@ function applyState(st, snap, prevState){
         } else {
             if(oppOpensFirstDeal) hint.textContent='Dealing cards…';
             else hint.textContent=st.has_pending_bot?'Bot is playing…':
-                (!st.human_is_current?'Bot is thinking…':'Tap a card in your hand to play');
+                (!st.human_is_current?'Bot is thinking…':'');
         }
     }
     updateTurnAnnounce(st, human);
@@ -2198,7 +2154,7 @@ function attachListeners(_captureMapIgnored){
         _selHand=null; _selHandEl=null; _selTable.clear(); _valid=false;
         if(hIn) hIn.value=''; if(tIn) tIn.value='';
         if(playBtn) playBtn.disabled=true;
-        clearHL(); tip('Tap a card in your hand to play');
+        clearHL(); tip('');
     }
     function sync(){
         if(hIn) hIn.value=_selHand!=null?_selHand:'';
@@ -2679,6 +2635,7 @@ document.addEventListener('DOMContentLoaded', function(){
 })();
 </script>
 
+{% include 'partials/leave_game_modal.html' %}
 {% include 'partials/name_modal.html' %}
 {% include 'partials/invite_friend_modal.html' %}
 {% include 'partials/friends_hub_modal.html' %}
