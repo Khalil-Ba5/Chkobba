@@ -53,6 +53,64 @@
     </div>
 </main>
 
+<!-- ════════════════ INVITE JOIN GATE (link visit — seat not taken until Join) ════════════════ -->
+{% elif awaiting_join|default(false) %}
+<main class="play-room-full play-join-gate">
+    <div class="room-full-box">
+        <div class="room-full-icon">🎴</div>
+        <h2 class="room-full-title">Join this game?</h2>
+        <p class="room-full-sub">
+            <strong>{{ invite_creator_name|e }}</strong> invited you to a private Chkobba match.
+            Tap below to take the open seat — opening the link alone does not join the room.
+        </p>
+        <div class="room-full-actions">
+            <button type="button" id="confirm-join-room-btn" class="btn-deal">Join game</button>
+            <a href="{{ url_for('index') }}" class="btn-deal btn-secondary" style="text-decoration:none">Back home</a>
+        </div>
+        <p id="join-room-error" class="room-full-sub" style="color:#e88;margin-top:.75rem" hidden></p>
+    </div>
+</main>
+<script>
+(function(){
+    var btn = document.getElementById('confirm-join-room-btn');
+    var err = document.getElementById('join-room-error');
+    if (!btn) return;
+    function getCSRF(){
+        var m = document.querySelector('meta[name="csrf-token"]');
+        return m ? m.getAttribute('content') : '';
+    }
+    btn.addEventListener('click', function(){
+        btn.disabled = true;
+        btn.textContent = 'Joining…';
+        if (err) err.hidden = true;
+        fetch('/api/rooms/{{ room_id }}/join', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            credentials: 'same-origin',
+            body: JSON.stringify({_csrf_token: getCSRF()})
+        })
+        .then(function(r){ return r.json().then(function(d){ return {ok: r.ok, data: d}; }); })
+        .then(function(res){
+            if (res.ok && res.data.play_url) {
+                window.location.href = res.data.play_url;
+                return;
+            }
+            btn.disabled = false;
+            btn.textContent = 'Join game';
+            if (err) {
+                err.textContent = (res.data && res.data.error) || 'Could not join.';
+                err.hidden = false;
+            }
+        })
+        .catch(function(){
+            btn.disabled = false;
+            btn.textContent = 'Join game';
+            if (err) { err.textContent = 'Network error.'; err.hidden = false; }
+        });
+    });
+})();
+</script>
+
 {% else %}
 
 <!-- ════════════════ COUNTDOWN OVERLAY ════════════════ -->
@@ -96,7 +154,7 @@
     <div class="waiting-box">
         <div class="waiting-players">
             {% set p0 = blob.players[0] if blob.players|length > 0 else {} %}
-            {% set p1 = blob.players[1] if blob.players|length > 1 else {} %}
+            {% set p1 = blob.players[1] if blob.players|length > 1 and blob.players[1].guest_id|default('') != guest_id|default('') else {} %}
             <div class="waiting-player" id="wp-0">
                 {% if my_seat|default(0) == 0 and human_avatar_url %}
                     {{ player_avatar('', '', human_avatar_url, true) }}
@@ -206,7 +264,7 @@
         </div>
 
         <p id="waiting-status-msg" class="waiting-status-msg">
-            {% if blob.players|length >= 2 %}Both players joined — starting game…{% else %}Waiting for second player to join{% endif %}
+            {% if p1 and p1.guest_id|default('') %}Both players joined — starting game…{% else %}Waiting for your friend to open the link and tap Join{% endif %}
         </p>
     </div>
 </div>
@@ -2360,6 +2418,7 @@ document.addEventListener('DOMContentLoaded', function(){
     var ps = null;
     try{ var el=document.getElementById('page-state'); if(el) ps=JSON.parse(el.textContent); }catch(e){}
     if(!ps || !ps.room_id || ps.room_id === '__no_room__') return;
+    if(ps.awaiting_join) return;
 
     // window._gameEngine may not exist yet on the waiting screen (game_active=false).
     // Game.init() must still run so game_join is emitted and the game can start.
@@ -2431,8 +2490,9 @@ document.addEventListener('DOMContentLoaded', function(){
 
     // ── Second player joined while on waiting screen ──────────────────────
     window.Game.on('room_player_joined', function(data){
+        if(!data || !data.guest_id || data.guest_id === ps.guest_id) return;
         var slotEl = document.getElementById('wp-1');
-        if(slotEl && !data.is_self){
+        if(slotEl){
             slotEl.classList.remove('waiting-player-empty');
             var avInner = data.avatar_url
                 ? '<img class="avatar-img avatar-lg" src="'+data.avatar_url+'" alt="">'

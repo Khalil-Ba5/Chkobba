@@ -2530,21 +2530,10 @@ def api_friends_play_invite_respond():
         return jsonify({"error": "Room expired"}), 404
 
     display_name = session.get("display_name", "Guest")
-    from datetime import datetime, timezone
 
-    presence = _player_presence_fields(viewer_id)
-    blob["players"].append(
-        {
-            "guest_id": viewer_id,
-            "display_name": display_name,
-            "seat": 1,
-            "is_bot": False,
-            "connected": False,
-            "sid": None,
-            **presence,
-        }
-    )
-    blob["last_action_at"] = datetime.now(timezone.utc).isoformat()
+    seat = _join_mp_room_player(room_id, blob, viewer_id, display_name)
+    if seat is None:
+        return jsonify({"error": "Room is full"}), 403
     blob["visibility"] = "private_matched"
     app.game_store.set(room_id, blob)
     inv["status"] = "accepted"
@@ -2558,20 +2547,6 @@ def api_friends_play_invite_respond():
             "room_id": room_id,
             "to": _guest_notify_payload(viewer_id),
         },
-    )
-    socketio.emit(
-        "room_player_joined",
-        {
-            "seat": 1,
-            "display_name": display_name,
-            "guest_id": viewer_id,
-            "avatar_initial": display_name[0].upper(),
-            "avatar_color": avatar_color(viewer_id),
-            "avatar_key": presence["avatar_key"],
-            "avatar_url": presence["avatar_url"],
-            "room_id": room_id,
-        },
-        to=room_id,
     )
     return jsonify({
         "ok": True,
@@ -2690,9 +2665,103 @@ def lobby():
     )
 
 
+def _join_mp_room_player(
+    room_id: str,
+    blob: dict,
+    guest_id: str,
+    display_name: str,
+) -> int | None:
+    """Add a human player to a waiting 1v1 room. Returns seat or None if full."""
+    from datetime import datetime, timezone
+
+    if len(blob.get("players", [])) >= 2:
+        return None
+    for p in blob.get("players", []):
+        if p.get("guest_id") == guest_id:
+            return p["seat"]
+
+    my_seat = len(blob["players"])
+    presence = _player_presence_fields(guest_id)
+    blob["players"].append(
+        {
+            "guest_id": guest_id,
+            "display_name": display_name,
+            "seat": my_seat,
+            "is_bot": False,
+            "connected": False,
+            "sid": None,
+            **presence,
+        }
+    )
+    blob["last_action_at"] = datetime.now(timezone.utc).isoformat()
+    if blob.get("visibility") == "public":
+        blob["visibility"] = "private_matched"
+    app.game_store.set(room_id, blob)
+
+    socketio.emit(
+        "room_player_joined",
+        {
+            "seat": my_seat,
+            "display_name": display_name,
+            "guest_id": guest_id,
+            "avatar_initial": display_name[0].upper(),
+            "avatar_color": avatar_color(guest_id),
+            "avatar_key": presence["avatar_key"],
+            "avatar_url": presence["avatar_url"],
+            "room_id": room_id,
+        },
+        to=room_id,
+    )
+    socketio.emit(
+        "lobby_update",
+        {"action": "remove", "room_id": room_id},
+        to="lobby",
+    )
+    return my_seat
+
+
+@app.route("/api/rooms/<room_id>/join", methods=["POST"])
+def api_join_room(room_id: str):
+    """Explicitly join a waiting room (opening the invite link alone does not claim a seat)."""
+    _ensure_guest_session()
+    data = request.get_json(force=True, silent=True) or {}
+    token = session.get("_csrf_token")
+    if not token or not hmac.compare_digest(token, str(data.get("_csrf_token", ""))):
+        return jsonify({"error": "Invalid CSRF token"}), 403
+
+    guest_id = session.get("guest_id", "")
+    display_name = session.get("display_name", "Guest")
+    blob = app.game_store.get(room_id)
+    if blob is None or blob.get("mode") != "1v1":
+        return jsonify({"error": "Room not found"}), 404
+    if blob.get("status") not in ("waiting", "starting"):
+        return jsonify({"error": "Game already started"}), 400
+
+    for p in blob.get("players", []):
+        if p.get("guest_id") == guest_id:
+            return jsonify({
+                "ok": True,
+                "seat": p["seat"],
+                "play_url": url_for("play_room", room_id=room_id),
+            })
+
+    if len(blob.get("players", [])) >= 2:
+        return jsonify({"error": "Room is full"}), 403
+
+    seat = _join_mp_room_player(room_id, blob, guest_id, display_name)
+    if seat is None:
+        return jsonify({"error": "Could not join room"}), 400
+
+    return jsonify({
+        "ok": True,
+        "seat": seat,
+        "play_url": url_for("play_room", room_id=room_id),
+    })
+
+
 @app.route("/play/<room_id>")
 def play_room(room_id: str):
-    """Multiplayer game room — join if there is a free seat, else spectate."""
+    """Multiplayer game room — show join gate or waiting screen; seats need explicit join."""
     _ensure_guest_session()
     guest_id = session.get("guest_id", "")
     display_name = session.get("display_name", "Guest")
@@ -2783,47 +2852,27 @@ def play_room(room_id: str):
             ),
         )
 
-    if my_seat is None:
-        # Join as player 1.
-        from datetime import datetime, timezone
-        my_seat = len(blob["players"])  # will be 1
-        presence = _player_presence_fields(guest_id)
-        blob["players"].append(
-            {
-                "guest_id": guest_id,
-                "display_name": display_name,
-                "seat": my_seat,
-                "is_bot": False,
-                "connected": False,
-                "sid": None,
-                **presence,
-            }
-        )
-        blob["last_action_at"] = datetime.now(timezone.utc).isoformat()
-        # If the room was public, remove it from lobby visibility now.
-        if blob.get("visibility") == "public":
-            blob["visibility"] = "private_matched"
-        app.game_store.set(room_id, blob)
-        # Notify any connected SocketIO clients in the room about the new player.
-        socketio.emit(
-            "room_player_joined",
-            {
-                "seat": my_seat,
-                "display_name": display_name,
-                "guest_id": guest_id,
-                "avatar_initial": display_name[0].upper(),
-                "avatar_color": avatar_color(guest_id),
-                "avatar_key": presence["avatar_key"],
-                "avatar_url": presence["avatar_url"],
-                "room_id": room_id,
-            },
-            to=room_id,
-        )
-        # Announce removal to lobby viewers.
-        socketio.emit(
-            "lobby_update",
-            {"action": "remove", "room_id": room_id},
-            to="lobby",
+    if my_seat is None and not room_full:
+        creator = blob["players"][0] if blob.get("players") else {}
+        return render_template(
+            "play.html",
+            **_merge_template_ctx(
+                {
+                    "room_not_found": False,
+                    "room_full": False,
+                    "awaiting_join": True,
+                    "invite_creator_name": creator.get("display_name", "Host"),
+                    "blob": blob,
+                    "room_id": room_id,
+                    "game_mode": "1v1",
+                    "my_seat": None,
+                    "game_active": False,
+                    "invite_url": None,
+                    "friends": _friends_list_for_session(),
+                },
+                profile,
+                _empty_game_ctx(),
+            ),
         )
 
     game_active = blob.get("status") == "active"
