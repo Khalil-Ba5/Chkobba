@@ -1,0 +1,23 @@
+{# Keeps guest_id in localStorage and restores profile if the server session was lost. #}
+<script>
+(function(){
+    var current = {{ guest_id|default('', true)|tojson }};
+    var stored = localStorage.getItem('chk_guest_id');
+    if (current) {
+        localStorage.setItem('chk_guest_id', current);
+    }
+    if (!stored || stored === current) return;
+
+    var csrf = document.querySelector('meta[name="csrf-token"]');
+    fetch('/api/session/restore', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({guest_id: stored})
+    })
+    .then(function(r){ return r.json().then(function(d){ return {ok: r.ok, data: d}; }); })
+    .then(function(res){
+        if (res.ok && res.data.ok) location.reload();
+    })
+    .catch(function(){});
+})();
+</script>

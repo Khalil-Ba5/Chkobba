@@ -1,0 +1,374 @@
+{# Opponent profile popup — 1v1 online human opponents only #}
+<div id="player-profile-modal" class="player-profile-backdrop" role="dialog" aria-modal="true" aria-label="Player profile" hidden>
+    <div class="player-profile-box" role="document">
+        <button type="button" class="player-profile-close" id="player-profile-close" aria-label="Close">&times;</button>
+        <div class="player-profile-head">
+            <div id="player-profile-avatar" class="player-profile-avatar-slot"></div>
+            <div class="player-profile-head-text">
+                <h2 id="player-profile-name" class="player-profile-name">Player</h2>
+                <p id="player-profile-subtitle" class="player-profile-subtitle">Head-to-head</p>
+            </div>
+        </div>
+        <div id="player-profile-stats" class="player-profile-stats" hidden>
+            <div class="player-profile-stat">
+                <span class="player-profile-stat-val" id="player-profile-winrate">—</span>
+                <span class="player-profile-stat-lbl" id="player-profile-winrate-lbl">Your win rate vs them</span>
+            </div>
+            <div class="player-profile-stat">
+                <span class="player-profile-stat-val" id="player-profile-record">0–0</span>
+                <span class="player-profile-stat-lbl" id="player-profile-record-lbl">Games together (draws)</span>
+            </div>
+        </div>
+        <p id="player-profile-h2h-empty" class="player-profile-empty" hidden>No games played together yet.</p>
+        <ul id="player-profile-matches" class="player-profile-matches"></ul>
+        <p id="player-profile-error" class="player-profile-error" hidden></p>
+        <div class="player-profile-actions player-profile-actions-stack" id="player-profile-actions">
+            <button type="button" id="player-profile-friend-btn" class="btn-deal player-profile-friend-btn">Add friend</button>
+            <button type="button" id="player-profile-invite-btn" class="btn-deal player-profile-invite-btn" hidden>Invite to play</button>
+        </div>
+        <p id="player-profile-invite-hint" class="player-profile-invite-hint" hidden>
+            Sends a private game invite — your friend can accept from their screen.
+        </p>
+        <div class="player-profile-request-row" id="player-profile-request-row" hidden>
+            <button type="button" id="player-profile-accept-btn" class="btn-deal">Accept friend</button>
+            <button type="button" id="player-profile-decline-btn" class="btn-deal btn-secondary">Decline</button>
+        </div>
+    </div>
+</div>
+
+<script>
+(function(){
+    var modal = document.getElementById('player-profile-modal');
+    if (!modal) return;
+
+    var closeBtn = document.getElementById('player-profile-close');
+    var nameEl = document.getElementById('player-profile-name');
+    var subtitleEl = document.getElementById('player-profile-subtitle');
+    var winrateLbl = document.getElementById('player-profile-winrate-lbl');
+    var recordLbl = document.getElementById('player-profile-record-lbl');
+    var avatarSlot = document.getElementById('player-profile-avatar');
+    var statsEl = document.getElementById('player-profile-stats');
+    var winrateEl = document.getElementById('player-profile-winrate');
+    var recordEl = document.getElementById('player-profile-record');
+    var emptyEl = document.getElementById('player-profile-h2h-empty');
+    var listEl = document.getElementById('player-profile-matches');
+    var errEl = document.getElementById('player-profile-error');
+    var friendBtn = document.getElementById('player-profile-friend-btn');
+    var inviteBtn = document.getElementById('player-profile-invite-btn');
+    var requestRow = document.getElementById('player-profile-request-row');
+    var acceptBtn = document.getElementById('player-profile-accept-btn');
+    var declineBtn = document.getElementById('player-profile-decline-btn');
+    var inviteHint = document.getElementById('player-profile-invite-hint');
+
+    var currentGuestId = null;
+    var currentFriendStatus = 'none';
+    var currentRequestId = null;
+    var loading = false;
+
+    function getCSRF(){
+        var m = document.querySelector('meta[name="csrf-token"]');
+        return m ? m.getAttribute('content') : '';
+    }
+
+    function getRoomId(){
+        if (typeof ps !== 'undefined' && ps && ps.room_id) return ps.room_id;
+        return '';
+    }
+
+    function renderAvatar(data){
+        if (!avatarSlot) return;
+        var url = data.avatar_url;
+        var initial = data.avatar_initial || '?';
+        var color = data.avatar_color || '#888';
+        if (url) {
+            avatarSlot.innerHTML = '<img class="avatar-img player-profile-avatar-img" src="'+url+'" alt="">';
+        } else {
+            avatarSlot.innerHTML = '<span class="avatar-dot player-profile-avatar-img" style="background:'+color+'">'+initial+'</span>';
+        }
+    }
+
+    function resultLabel(r){
+        if (r === 'won') return 'Won';
+        if (r === 'lost') return 'Lost';
+        return 'Draw';
+    }
+
+    function resultClass(r){
+        if (r === 'won') return 'won';
+        if (r === 'lost') return 'lost';
+        return 'draw';
+    }
+
+    function formatDate(iso){
+        if (!iso) return '';
+        return iso.length >= 10 ? iso.slice(0, 10) : iso;
+    }
+
+    function updateFriendUI(){
+        if (requestRow) requestRow.hidden = currentFriendStatus !== 'pending_received';
+        if (friendBtn) {
+            friendBtn.hidden = currentFriendStatus === 'pending_received';
+            friendBtn.classList.remove('is-friend', 'is-pending');
+            friendBtn.disabled = false;
+            if (currentFriendStatus === 'friends') {
+                friendBtn.textContent = '✓ Friends';
+                friendBtn.classList.add('is-friend');
+                friendBtn.disabled = true;
+            } else if (currentFriendStatus === 'pending_sent') {
+                friendBtn.textContent = 'Request sent';
+                friendBtn.classList.add('is-pending');
+                friendBtn.disabled = true;
+            } else {
+                friendBtn.textContent = 'Add friend';
+            }
+        }
+        if (inviteBtn) {
+            inviteBtn.hidden = currentFriendStatus !== 'friends';
+        }
+        if (inviteHint) {
+            inviteHint.hidden = currentFriendStatus !== 'friends';
+        }
+    }
+
+    function showError(msg){
+        if (errEl) { errEl.textContent = msg; errEl.hidden = !msg; }
+    }
+
+    function resolveGuestId(btn){
+        if (!btn) return '';
+        return (btn.dataset.guestId || btn.getAttribute('data-guest-id') || '').trim();
+    }
+
+    function openForGuest(guestId){
+        guestId = (guestId || '').trim();
+        if (!guestId || loading) return;
+        if (typeof ps !== 'undefined' && ps && ps.guest_id && guestId === ps.guest_id) {
+            showError('That is your profile — use your name in the HUD to edit it.');
+            return;
+        }
+        currentGuestId = guestId;
+        currentFriendStatus = 'none';
+        currentRequestId = null;
+        showError('');
+        if (listEl) listEl.innerHTML = '';
+        if (emptyEl) emptyEl.hidden = true;
+        if (statsEl) statsEl.hidden = true;
+        if (nameEl) nameEl.textContent = 'Loading…';
+        renderAvatar({ avatar_initial: '?', avatar_color: '#888' });
+        updateFriendUI();
+        modal.hidden = false;
+        loading = true;
+
+        var q = getRoomId() ? ('?room_id=' + encodeURIComponent(getRoomId())) : '';
+        fetch('/api/players/' + encodeURIComponent(guestId) + '/summary' + q)
+            .then(function(r){ return r.json().then(function(d){ return {ok:r.ok, data:d}; }); })
+            .then(function(res){
+                if (!res.ok) {
+                    showError(res.data.error || 'Could not load profile.');
+                    return;
+                }
+                var d = res.data;
+                currentFriendStatus = d.friend_status || (d.is_friend ? 'friends' : 'none');
+                currentRequestId = d.friend_request_id || null;
+                var oppName = d.display_name || 'Player';
+                if (nameEl) nameEl.textContent = oppName;
+                if (subtitleEl) {
+                    var totalPreview = (d.head_to_head && d.head_to_head.total) || 0;
+                    subtitleEl.textContent = totalPreview > 0
+                        ? ('Record vs ' + oppName)
+                        : ('Online player');
+                }
+                if (winrateLbl) {
+                    winrateLbl.textContent = 'Your win rate vs ' + oppName;
+                }
+                if (recordLbl) {
+                    recordLbl.textContent = 'Record together (draws)';
+                }
+                renderAvatar(d);
+
+                var h2h = d.head_to_head || {};
+                var total = h2h.total || 0;
+                if (total === 0) {
+                    if (emptyEl) emptyEl.hidden = false;
+                    if (statsEl) statsEl.hidden = true;
+                } else {
+                    if (emptyEl) emptyEl.hidden = true;
+                    if (statsEl) statsEl.hidden = false;
+                    if (winrateEl) {
+                        winrateEl.textContent = h2h.win_rate_pct != null
+                            ? (h2h.win_rate_pct + '%')
+                            : '—';
+                    }
+                    if (recordEl) {
+                        recordEl.textContent = (h2h.wins || 0) + '–' + (h2h.losses || 0)
+                            + ' (' + (h2h.draws || 0) + ' draws)';
+                    }
+                }
+
+                if (listEl) {
+                    listEl.innerHTML = '';
+                    var recent = h2h.recent || [];
+                    if (recent.length) {
+                        var title = document.createElement('li');
+                        title.className = 'player-profile-matches-title';
+                        title.textContent = 'Last ' + recent.length + ' games together';
+                        listEl.appendChild(title);
+                    }
+                    recent.forEach(function(m){
+                        var li = document.createElement('li');
+                        li.className = 'player-profile-match';
+                        var score = (m.my_score != null && m.opp_score != null)
+                            ? ('You ' + m.my_score + ' – ' + m.opp_score + ' ' + oppName) : '—';
+                        var date = formatDate(m.ended_at);
+                        var forfeit = m.was_forfeit ? ' · forfeit' : '';
+                        li.innerHTML =
+                            '<span class="player-profile-match-result '+resultClass(m.result)+'">'
+                            + resultLabel(m.result) + '</span>'
+                            + '<span class="player-profile-match-score">' + score + '</span>'
+                            + '<span class="player-profile-match-date">' + date + forfeit + '</span>';
+                        listEl.appendChild(li);
+                    });
+                }
+                updateFriendUI();
+            })
+            .catch(function(){ showError('Network error.'); })
+            .finally(function(){ loading = false; });
+    }
+
+    window.onFriendStatusChanged = function(){
+        if (currentGuestId) openForGuest(currentGuestId);
+    };
+
+    function close(){
+        modal.hidden = true;
+        currentGuestId = null;
+    }
+
+    document.addEventListener('click', function(e){
+        var btn = e.target.closest('.opp-profile-trigger');
+        var gid = resolveGuestId(btn);
+        if (btn && gid) {
+            e.preventDefault();
+            openForGuest(gid);
+            return;
+        }
+        if (e.target === modal) close();
+    });
+
+    if (closeBtn) closeBtn.addEventListener('click', close);
+
+    document.addEventListener('keydown', function(e){
+        if (e.key === 'Escape' && !modal.hidden) close();
+    });
+
+    function postJson(url, body){
+        return fetch(url, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(Object.assign({_csrf_token: getCSRF()}, body || {}))
+        }).then(function(r){ return r.json().then(function(d){ return {ok:r.ok, data:d}; }); });
+    }
+
+    if (friendBtn) {
+        friendBtn.addEventListener('click', function(){
+            if (!currentGuestId || currentFriendStatus === 'friends' || currentFriendStatus === 'pending_sent') return;
+            friendBtn.disabled = true;
+            postJson('/api/friends/add', {guest_id: currentGuestId})
+            .then(function(res){
+                if (!res.ok) {
+                    showError(res.data.error || 'Could not send request.');
+                    friendBtn.disabled = false;
+                    return;
+                }
+                currentFriendStatus = res.data.friend_status || 'pending_sent';
+                showError('');
+                updateFriendUI();
+                if (window.showCommentaryToast) {
+                    window.showCommentaryToast('Friend request sent');
+                }
+            })
+            .catch(function(){
+                showError('Network error.');
+                friendBtn.disabled = false;
+            });
+        });
+    }
+
+    if (acceptBtn) {
+        acceptBtn.addEventListener('click', function(){
+            if (!currentRequestId) return;
+            acceptBtn.disabled = true;
+            postJson('/api/friends/respond', {request_id: currentRequestId, accept: true})
+            .then(function(res){
+                if (!res.ok) {
+                    showError(res.data.error || 'Could not accept.');
+                    acceptBtn.disabled = false;
+                    return;
+                }
+                currentFriendStatus = 'friends';
+                currentRequestId = null;
+                showError('');
+                updateFriendUI();
+                if (window.showCommentaryToast) window.showCommentaryToast('You are now friends ✓');
+                if (window.reloadLobbyFriendsList) window.reloadLobbyFriendsList();
+            })
+            .catch(function(){ showError('Network error.'); acceptBtn.disabled = false; });
+        });
+    }
+
+    if (declineBtn) {
+        declineBtn.addEventListener('click', function(){
+            if (!currentRequestId) return;
+            postJson('/api/friends/respond', {request_id: currentRequestId, accept: false})
+            .then(function(res){
+                currentFriendStatus = 'none';
+                currentRequestId = null;
+                showError('');
+                updateFriendUI();
+            });
+        });
+    }
+
+    if (inviteBtn) {
+        inviteBtn.addEventListener('click', function(){
+            if (!currentGuestId || currentFriendStatus !== 'friends') return;
+            var target = 11;
+            var tsEl = document.getElementById('page-state');
+            if (tsEl) {
+                try {
+                    var pst = JSON.parse(tsEl.textContent);
+                    if (pst.target_score) target = pst.target_score;
+                } catch (e) {}
+            }
+            var waitEl = document.getElementById('waiting-screen');
+            if (waitEl && waitEl.dataset.targetScore) {
+                target = parseInt(waitEl.dataset.targetScore, 10) || target;
+            }
+            inviteBtn.disabled = true;
+            postJson('/api/friends/play-invite', {guest_id: currentGuestId, target_score: target})
+            .then(function(res){
+                inviteBtn.disabled = false;
+                if (!res.ok) {
+                    showError(res.data.error || 'Could not send invite.');
+                    return;
+                }
+                showError('');
+                if (window.showCommentaryToast) {
+                    window.showCommentaryToast('Invite sent — waiting for friend…');
+                }
+                if (res.data.room_id && window.location.pathname.indexOf('/play/') === 0) {
+                    window.location.reload();
+                } else if (res.data.room_id) {
+                    window.location.href = '/play/' + res.data.room_id;
+                }
+            })
+            .catch(function(){
+                showError('Network error.');
+                inviteBtn.disabled = false;
+            });
+        });
+    }
+
+    window.openOpponentProfile = openForGuest;
+})();
+</script>

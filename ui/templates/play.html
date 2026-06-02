@@ -25,17 +25,13 @@
 
 <!-- ════════════════ HUD ════════════════ -->
 <header class="hud">
-    <div class="hud-brand">Chkobba</div>
+    {% include 'partials/hud_brand.html' %}
 
-    <div class="hud-scores">
+    <div class="hud-spacer{% if game_active|default(false) %} hidden{% endif %}" id="hud-spacer"></div>
+    <div class="hud-scores{% if not game_active|default(false) %} hidden{% endif %}" id="hud-scores">
         <div class="hud-score you">
-            <button class="hs-label player-name-btn" id="open-name-modal" title="Change your name" aria-label="Change name">
-                <span id="hud-player-avatar" class="human-avatar-slot">
-                    {{ player_avatar(avatar_initial, avatar_color, human_avatar_url|default(none), false, 'avatar-hs') }}
-                </span>
-                <span class="hs-name-text" title="{{ display_name|e }}">{{ display_name }}</span>
-            </button>
-            <span class="hs-val">{{ match_scores[0] if not game_active else match_scores[0] }}</span>
+            <span class="hs-label">You</span>
+            <span class="hs-val">{{ match_scores[0] }}</span>
         </div>
         {% if target_score %}
         <div class="hud-score target">
@@ -50,8 +46,19 @@
         {% endif %}
         <div class="hud-score bot">
             <span class="hs-label opp-hs-label">
-                {% if game_active|default(false) and bot_avatar_url %}{{ player_avatar('', '', bot_avatar_url, false, 'avatar-hs') }}{% endif %}
-                <span class="hs-name-text">{{ bot_name|default('Opponent') if game_active|default(false) else 'Opponent' }}</span>
+                {% if opponent_is_human|default(false) and opponent_guest_id|default(none) %}
+                <button type="button" class="opp-profile-trigger hud-opp-profile-trigger" data-guest-id="{{ opponent_guest_id }}"
+                        title="View player profile" aria-label="View {{ bot_name|default('Opponent') }} profile">
+                    {{ player_avatar(
+                        (bot_name|default('O'))[0]|upper,
+                        opponent_avatar_color|default('#888'),
+                        bot_avatar_url|default(none),
+                        false, 'avatar-hs') }}
+                </button>
+                {% elif bot_avatar_url %}
+                {{ player_avatar('', '', bot_avatar_url, false, 'avatar-hs') }}
+                {% endif %}
+                <span class="hs-name-text">{{ bot_name|default('Opponent') }}</span>
             </span>
             <span class="hs-val">{{ match_scores[1] }}</span>
         </div>
@@ -60,9 +67,8 @@
     <nav class="hud-nav">
         <span class="conn-dot" title="Connection status" aria-hidden="true"></span>
         <span id="conn-status-text" class="sr-only" aria-live="polite"></span>
-        <a href="{{ url_for('index') }}"  class="hud-btn">Home</a>
-        <a href="{{ url_for('lobby') }}"  class="hud-btn">Lobby</a>
-        <a href="{{ url_for('history') }}" class="hud-btn">History</a>
+        <a href="{{ url_for('lobby') }}" class="hud-btn">Lobby</a>
+        {% include 'partials/hud_user_menu.html' %}
     </nav>
 </header>
 
@@ -132,7 +138,8 @@
 
 <!-- ════════════════ WAITING SCREEN ════════════════ -->
 <div id="waiting-screen" class="play-waiting{% if game_active %} hidden{% endif %}"
-     data-created-at="{{ blob.created_at or '' }}">
+     data-created-at="{{ blob.created_at or '' }}"
+     data-target-score="{{ blob.target_score_mp or target_score or 11 }}">
     <div class="waiting-box">
         <div class="waiting-players">
             {% set p0 = blob.players[0] if blob.players|length > 0 else {} %}
@@ -140,6 +147,14 @@
             <div class="waiting-player" id="wp-0">
                 {% if my_seat|default(0) == 0 and human_avatar_url %}
                     {{ player_avatar('', '', human_avatar_url, true) }}
+                {% elif my_seat|default(0) != 0 and p0.guest_id|default(none) and not p0.is_bot|default(false) %}
+                    <button type="button" class="opp-profile-trigger" data-guest-id="{{ p0.guest_id }}" title="View player profile">
+                        {{ player_avatar(
+                            (p0.display_name or 'P')[0]|upper,
+                            p0.guest_id|avatar_color_filter,
+                            p0.avatar_url|default(none),
+                            true) }}
+                    </button>
                 {% elif p0.avatar_url|default(none) %}
                     {{ player_avatar('', '', p0.avatar_url, true) }}
                 {% else %}
@@ -157,6 +172,14 @@
                 {% if p1 %}
                     {% if my_seat|default(0) == 1 and human_avatar_url %}
                         {{ player_avatar('', '', human_avatar_url, true) }}
+                    {% elif my_seat|default(0) != 1 and p1.guest_id|default(none) and not p1.is_bot|default(false) %}
+                        <button type="button" class="opp-profile-trigger" data-guest-id="{{ p1.guest_id }}" title="View player profile">
+                            {{ player_avatar(
+                                (p1.display_name or 'P')[0]|upper,
+                                p1.guest_id|avatar_color_filter,
+                                p1.avatar_url|default(none),
+                                true) }}
+                        </button>
                     {% elif p1.is_bot and bot_avatar_url %}
                         {{ player_avatar('', '', bot_avatar_url, true) }}
                     {% elif p1.avatar_url|default(none) %}
@@ -176,15 +199,33 @@
             </div>
         </div>
 
-        {% if invite_url %}
         <div class="waiting-invite">
-            <p class="waiting-invite-label">Share this link to invite a friend:</p>
+            {% if friends|default([])|length > 0 %}
+            <p class="waiting-invite-label">Invite an accepted friend:</p>
+            <div class="waiting-friends-list lobby-friends-list">
+                {% for f in friends %}
+                <div class="lobby-friend-row waiting-friend-row" data-guest-id="{{ f.guest_id }}">
+                    <div class="lobby-friend-player">
+                        {% if f.avatar_url %}
+                        <img class="avatar-img avatar-lg" src="{{ f.avatar_url }}" alt="">
+                        {% else %}
+                        <span class="avatar-dot avatar-lg" style="background:{{ f.avatar_color }}">{{ f.avatar_initial }}</span>
+                        {% endif %}
+                        <span class="lobby-friend-name">{{ f.display_name }}</span>
+                    </div>
+                    <button type="button" class="btn-lobby-join lobby-friend-invite-btn waiting-friend-invite-btn" data-guest-id="{{ f.guest_id }}">Invite</button>
+                </div>
+                {% endfor %}
+            </div>
+            {% endif %}
+            {% if invite_url %}
+            <p class="waiting-invite-label">{% if friends|default([])|length > 0 %}Or share a link:{% else %}Share this link to invite a friend:{% endif %}</p>
             <div class="waiting-invite-row">
                 <input id="invite-url-input" class="waiting-invite-url" type="text" readonly value="{{ invite_url }}">
                 <button id="copy-invite-btn" class="btn-copy-invite" title="Copy link">📋 Copy</button>
             </div>
+            {% endif %}
         </div>
-        {% endif %}
 
         <!-- ── Waiting timer ── -->
         <p class="waiting-timer-line">
@@ -233,7 +274,17 @@
         <div class="zone-hand-row">
             <div class="zone-side zone-side-opp">
                 <div class="zone-identity">
-                    {% if bot_avatar_url %}
+                    {% if opponent_is_human|default(false) and opponent_guest_id|default(none) %}
+                    <button type="button" class="opp-profile-trigger zone-avatar-inline" id="opp-profile-trigger"
+                            data-guest-id="{{ opponent_guest_id }}" title="View player profile"
+                            aria-label="View {{ bot_name }} profile">
+                        {{ player_avatar(
+                            (bot_name|default('O'))[0]|upper,
+                            opponent_avatar_color|default('#888'),
+                            bot_avatar_url|default(none),
+                            false, 'zone-avatar-sm') }}
+                    </button>
+                    {% elif bot_avatar_url %}
                     <div class="zone-avatar-inline">
                         {{ player_avatar('', '', bot_avatar_url, false, 'zone-avatar-sm') }}
                     </div>
@@ -511,9 +562,13 @@
     "deck_remaining":               deck_remaining,
     "round_moves_played":           round_moves_played|default(0),
     "match_scores":                 match_scores,
-    "bot_mood":                     bot_mood,
-    "bot_name":                     bot_name,
+    "bot_mood":                     bot_mood|default('😐'),
+    "bot_name":                     bot_name|default('Opponent'),
     "bot_avatar_url":               bot_avatar_url|default(none),
+    "opponent_guest_id":            opponent_guest_id|default(none),
+    "opponent_is_human":            opponent_is_human|default(false),
+    "opponent_avatar_color":        opponent_avatar_color|default(none),
+    "opponent_avatar_initial":      opponent_avatar_initial|default(none),
     "last_played_card":             last_played_card,
     "last_played_by":               last_played_by,
     "room_id":                      blob.room_id,
@@ -525,6 +580,7 @@
     "avatar_color":                 avatar_color,
     "avatar_key":                   avatar_key|default(none),
     "human_avatar_url":             human_avatar_url|default(none),
+    "target_score":                 target_score|default(blob.target_score_mp|default(11)),
     "game_active":                  game_active,
     "awaiting_cut_choice":          awaiting_cut_choice|default(false),
     "cut_card":                     cut_card|default(none),
@@ -1672,6 +1728,67 @@ function bindCutChoiceButtonsPlay(){
     if(db&&!db._cutBound){ db._cutBound=true; db.addEventListener('click',function(){ send(false); }); }
 }
 
+function buildOppAvatarInner(st, sizeClass){
+    var cls=sizeClass||'zone-avatar-sm';
+    if(st.bot_avatar_url){
+        return '<img class="avatar-img '+cls+'" src="'+st.bot_avatar_url+'" alt="" loading="lazy" decoding="async">';
+    }
+    var color=st.opponent_avatar_color||'#888';
+    var initial=(st.opponent_avatar_initial||(st.bot_name||'O').charAt(0)||'?').toUpperCase();
+    return '<span class="avatar-dot '+cls+'" style="background:'+color+'">'+initial+'</span>';
+}
+
+function syncOpponentAvatarUI(st){
+    if(!st||st.game_mode!=='1v1'||!st.opponent_is_human||!st.opponent_guest_id) return;
+    var identity=document.querySelector('.opp-zone .zone-identity');
+    if(!identity) return;
+    var name=st.bot_name||'Opponent';
+    var inner=buildOppAvatarInner(st,'zone-avatar-sm');
+    var btn=document.getElementById('opp-profile-trigger');
+    if(!btn){
+        btn=document.createElement('button');
+        btn.type='button';
+        btn.className='opp-profile-trigger zone-avatar-inline';
+        btn.id='opp-profile-trigger';
+        btn.title='View player profile';
+        var nameEl=identity.querySelector('.zone-name');
+        if(nameEl) identity.insertBefore(btn,nameEl);
+        else identity.insertBefore(btn,identity.firstChild);
+    }
+    btn.dataset.guestId=st.opponent_guest_id;
+    btn.setAttribute('aria-label','View '+name+' profile');
+    btn.innerHTML=inner;
+    var plainAv=identity.querySelector('.zone-avatar-inline:not(.opp-profile-trigger)');
+    if(plainAv) plainAv.remove();
+
+    var hudLabel=document.querySelector('.hud-score.bot .opp-hs-label');
+    if(!hudLabel) return;
+    var hudBtn=hudLabel.querySelector('.opp-profile-trigger');
+    if(!hudBtn){
+        hudBtn=document.createElement('button');
+        hudBtn.type='button';
+        hudBtn.className='opp-profile-trigger hud-opp-profile-trigger';
+        hudBtn.title='View player profile';
+        var nameTxt=hudLabel.querySelector('.hs-name-text');
+        if(nameTxt) hudLabel.insertBefore(hudBtn,nameTxt);
+        else hudLabel.insertBefore(hudBtn,hudLabel.firstChild);
+    }
+    hudBtn.dataset.guestId=st.opponent_guest_id;
+    hudBtn.setAttribute('aria-label','View '+name+' profile');
+    hudBtn.innerHTML=buildOppAvatarInner(st,'avatar-hs');
+    hudLabel.querySelectorAll(':scope > .avatar-img, :scope > .avatar-dot').forEach(function(el){
+        el.remove();
+    });
+}
+
+function showHudMatchScores(){
+    var sp = document.getElementById('hud-spacer');
+    var sc = document.getElementById('hud-scores');
+    if(sp) sp.classList.add('hidden');
+    if(sc) sc.classList.remove('hidden');
+}
+window.showHudMatchScores = showHudMatchScores;
+
 function applyState(st,snap,prevStateOverride){
     try {
     if(!st||st.show_start_screen){window.location.href='/';return;}
@@ -1801,11 +1918,16 @@ function applyState(st,snap,prevStateOverride){
 
     var hudY=document.querySelector('.hud-score.you .hs-val');
     var hudB=document.querySelector('.hud-score.bot .hs-val');
+    if(st.game_active) showHudMatchScores();
     if(hudY) hudY.textContent=st.match_scores[0];
     if(hudB) hudB.textContent=st.match_scores[1];
 
     var moodEl=document.querySelector('.bot-mood');
     if(moodEl) moodEl.textContent=st.bot_mood;
+    document.querySelectorAll('.opp-zone .zone-display-name').forEach(function(el){
+        el.textContent=oppName;
+    });
+    syncOpponentAvatarUI(st);
     var bStats=document.querySelector('.opp-zone .zone-stats');
     if(bStats) bStats.innerHTML='<span class="chk-star">'+st.bot_chkobbas+'✦</span>';
     var bStatus=document.querySelector('.opp-zone .zone-status');
@@ -2327,6 +2449,7 @@ document.addEventListener('DOMContentLoaded', function(){
             if(cdo) cdo.classList.add('hidden');
             if(gbw) gbw.classList.remove('hidden');
             ws.classList.add('hidden');
+            if(window.showHudMatchScores) window.showHudMatchScores();
         });
     }
 
@@ -2344,6 +2467,7 @@ document.addEventListener('DOMContentLoaded', function(){
             if(cdo) cdo.classList.add('hidden');
             var gbw = document.getElementById('game-board-wrap');
             if(gbw) gbw.classList.remove('hidden');
+            if(window.showHudMatchScores) window.showHudMatchScores();
             return;
         }
 
@@ -2373,6 +2497,7 @@ document.addEventListener('DOMContentLoaded', function(){
                     cdo.classList.add('hidden');
                     var gbw = document.getElementById('game-board-wrap');
                     if(gbw) gbw.classList.remove('hidden');
+                    if(window.showHudMatchScores) window.showHudMatchScores();
                 }, 600);
             }
         }, 1000);
@@ -2383,10 +2508,13 @@ document.addEventListener('DOMContentLoaded', function(){
         var slotEl = document.getElementById('wp-1');
         if(slotEl && !data.is_self){
             slotEl.classList.remove('waiting-player-empty');
-            var avHtml = data.avatar_url
+            var avInner = data.avatar_url
                 ? '<img class="avatar-img avatar-lg" src="'+data.avatar_url+'" alt="">'
                 : '<span class="avatar-dot avatar-lg" style="background:'+(data.avatar_color||'#888')+'">'
                   + (data.avatar_initial || '?') + '</span>';
+            var avHtml = (data.guest_id && ps.game_mode === '1v1')
+                ? '<button type="button" class="opp-profile-trigger" data-guest-id="'+data.guest_id+'" title="View player profile">'+avInner+'</button>'
+                : avInner;
             slotEl.innerHTML =
                 avHtml
                 + '<span class="waiting-player-name">'+(data.display_name||'Opponent')+'</span>'
@@ -2410,8 +2538,13 @@ document.addEventListener('DOMContentLoaded', function(){
         slotEl.classList.remove('waiting-player-empty');
         var nameEl = slotEl.querySelector('.waiting-player-name');
         var name = data.display_name || (nameEl ? nameEl.textContent : 'Player');
+        var avInner = waitingAvatarHtml(data);
+        var isOpp = ps.game_mode === '1v1' && data.guest_id && data.guest_id !== ps.guest_id;
+        var avHtml = isOpp
+            ? '<button type="button" class="opp-profile-trigger" data-guest-id="'+data.guest_id+'" title="View player profile">'+avInner+'</button>'
+            : avInner;
         slotEl.innerHTML =
-            waitingAvatarHtml(data)
+            avHtml
             + '<span class="waiting-player-name">'+name+'</span>'
             + '<span class="waiting-badge joined">joined</span>';
     }
@@ -2419,11 +2552,10 @@ document.addEventListener('DOMContentLoaded', function(){
     window.Game.on('player_profile_updated', function(data){
         if(!data || !data.guest_id) return;
         if(data.guest_id === ps.guest_id){
-            document.querySelectorAll('.hs-name-text').forEach(function(el){
-                if(el.closest('.hud-score.you')) {
-                    el.textContent = data.display_name || el.textContent;
-                    el.title = data.display_name || el.title;
-                }
+            document.querySelectorAll('.hud-user-name, .hs-name-text').forEach(function(el){
+                if(el.closest('.hud-score.bot')) return;
+                el.textContent = data.display_name || el.textContent;
+                el.title = data.display_name || el.title;
             });
             var zn = document.getElementById('zone-display-name');
             if(zn) zn.textContent = data.display_name || zn.textContent;
@@ -2696,6 +2828,45 @@ document.addEventListener('DOMContentLoaded', function(){
     // ── Round / match over ────────────────────────────────────────────────
     window.Game.on('match_over',  function(){ window.location.reload(); });
 
+    // ── Invite accepted friends from waiting screen ───────────────────────
+    (function(){
+        var csrfMeta = document.querySelector('meta[name="csrf-token"]');
+        var csrf = csrfMeta ? csrfMeta.getAttribute('content') : '';
+        function waitTarget(){
+            var ws = document.getElementById('waiting-screen');
+            if (ws && ws.dataset.targetScore) return parseInt(ws.dataset.targetScore, 10) || 11;
+            return 11;
+        }
+        document.querySelectorAll('.waiting-friend-invite-btn').forEach(function(btn){
+            btn.addEventListener('click', function(){
+                var row = btn.closest('[data-guest-id]');
+                var gid = btn.dataset.guestId || (row && row.dataset.guestId);
+                if (!gid) return;
+                btn.disabled = true;
+                fetch('/api/friends/play-invite', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    credentials: 'same-origin',
+                    body: JSON.stringify({
+                        _csrf_token: csrf,
+                        guest_id: gid,
+                        target_score: waitTarget()
+                    })
+                })
+                .then(function(r){ return r.json().then(function(d){ return {ok:r.ok,data:d};}); })
+                .then(function(res){
+                    btn.disabled = false;
+                    if (res.ok && res.data.room_id) {
+                        window.location.href = '/play/' + res.data.room_id;
+                    } else {
+                        alert((res.data && res.data.error) || 'Could not invite.');
+                    }
+                })
+                .catch(function(){ btn.disabled = false; alert('Network error.'); });
+            });
+        });
+    })();
+
     // ── Copy invite button ────────────────────────────────────────────────
     var copyBtn = document.getElementById('copy-invite-btn');
     var urlInput = document.getElementById('invite-url-input');
@@ -2754,172 +2925,14 @@ document.addEventListener('DOMContentLoaded', function(){
 })();
 </script>
 
-<!-- ════ Change-name modal ════ -->
-<div id="name-modal" class="name-modal-backdrop" role="dialog" aria-modal="true" aria-label="Change your name" hidden>
-    <div class="name-modal-box">
-        <h2 class="name-modal-title">Your profile</h2>
-        {% if player_avatar_options %}
-        <div class="avatar-picker" id="avatar-picker" role="radiogroup" aria-label="Choose avatar">
-            {% for opt in player_avatar_options %}
-            <button type="button" class="avatar-pick-btn{% if avatar_key == opt.key %} selected{% endif %}"
-                    data-key="{{ opt.key }}" aria-label="{{ opt.label }}" aria-pressed="{{ 'true' if avatar_key == opt.key else 'false' }}">
-                <img src="{{ opt.url }}" alt="">
-            </button>
-            {% endfor %}
-        </div>
-        {% endif %}
-        <div id="name-modal-avatar-preview" class="name-modal-avatar-preview human-avatar-slot">
-            {{ player_avatar(avatar_initial, avatar_color, human_avatar_url|default(none), false, 'name-modal-avatar-img') }}
-        </div>
-        <input id="name-modal-input" class="name-modal-input" type="text" maxlength="30"
-               placeholder="Enter a name…" autocomplete="off" spellcheck="false"
-               value="{{ display_name }}" aria-label="Display name">
-        <p id="name-modal-error" class="name-modal-error" hidden></p>
-        <div class="name-modal-actions">
-            <button id="name-modal-save" class="btn-deal name-modal-save">Save</button>
-            <button id="name-modal-cancel" class="name-modal-cancel">Cancel</button>
-        </div>
-    </div>
-</div>
+{% include 'partials/name_modal.html' %}
 
-<script>
-(function(){
-    var modal   = document.getElementById('name-modal');
-    if(!modal) return;
-    var input   = document.getElementById('name-modal-input');
-    var errEl   = document.getElementById('name-modal-error');
-    var saveBtn = document.getElementById('name-modal-save');
-    var preview = document.getElementById('name-modal-avatar-preview');
-    var picker  = document.getElementById('avatar-picker');
-    var selectedAvatarKey = {{ avatar_key|default(none)|tojson }};
-
-    function avatarImgClassForSlot(el){
-        if(!el) return 'avatar-hs';
-        if(el.id === 'zone-player-avatar') return 'zone-avatar-sm';
-        if(el.id === 'name-modal-avatar-preview') return 'name-modal-avatar-img';
-        return 'avatar-hs';
-    }
-
-    function renderAvatarSlot(el, data){
-        if(!el) return;
-        var url = data.avatar_url;
-        var initial = data.avatar_initial || '?';
-        var color = data.avatar_color || '#888';
-        var imgCls = 'avatar-img ' + avatarImgClassForSlot(el);
-        if(url){
-            el.innerHTML = '<img class="'+imgCls+'" src="'+url+'" alt="">';
-        } else {
-            var dotCls = (el.id === 'zone-player-avatar') ? 'avatar-dot zone-avatar-sm' : 'avatar-dot avatar-hs';
-            if(el.id === 'name-modal-avatar-preview') dotCls = 'avatar-dot name-modal-avatar-img';
-            el.innerHTML = '<span class="'+dotCls+'" style="background:'+color+'">'+initial+'</span>';
-        }
-    }
-
-    function refreshHumanAvatars(data){
-        document.querySelectorAll('.human-avatar-slot').forEach(function(el){
-            renderAvatarSlot(el, data);
-        });
-    }
-
-    function syncPickerSelection(){
-        if(!picker) return;
-        picker.querySelectorAll('.avatar-pick-btn').forEach(function(btn){
-            var on = btn.dataset.key === selectedAvatarKey;
-            btn.classList.toggle('selected', on);
-            btn.setAttribute('aria-pressed', on ? 'true' : 'false');
-        });
-    }
-
-    function previewFromSelection(name){
-        var opt = picker ? picker.querySelector('.avatar-pick-btn[data-key="'+selectedAvatarKey+'"] img') : null;
-        var data = {
-            avatar_url: opt ? opt.getAttribute('src') : null,
-            avatar_initial: (name || '?')[0].toUpperCase(),
-            avatar_color: {{ avatar_color|tojson }}
-        };
-        if(preview) renderAvatarSlot(preview, data);
-    }
-
-    function getCSRF(){
-        var m = document.querySelector('meta[name="csrf-token"]');
-        return m ? m.getAttribute('content') : '';
-    }
-
-    function open(){
-        errEl.hidden = true;
-        input.value = (document.getElementById('zone-display-name') ||
-                       document.querySelector('.hud-score.you .hs-name-text') ||
-                       {textContent:''}).textContent.trim();
-        modal.hidden = false;
-        syncPickerSelection();
-        previewFromSelection(input.value.trim());
-        input.focus();
-        input.select();
-    }
-
-    function close(){ modal.hidden = true; }
-
-    function showError(msg){ errEl.textContent = msg; errEl.hidden = false; }
-
-    document.querySelectorAll('#open-name-modal').forEach(function(btn){
-        btn.addEventListener('click', open);
-    });
-
-    modal.addEventListener('click', function(e){
-        if(e.target === modal) close();
-    });
-
-    document.getElementById('name-modal-cancel').addEventListener('click', close);
-
-    if(input) input.addEventListener('keydown', function(e){
-        if(e.key === 'Enter')  saveBtn.click();
-        if(e.key === 'Escape') close();
-    });
-
-    if(input) input.addEventListener('input', function(){ previewFromSelection(this.value); });
-
-    if(picker){
-        picker.addEventListener('click', function(e){
-            var btn = e.target.closest('.avatar-pick-btn');
-            if(!btn) return;
-            selectedAvatarKey = btn.dataset.key || null;
-            syncPickerSelection();
-            previewFromSelection((input.value || '').trim());
-        });
-    }
-
-    saveBtn.addEventListener('click', function(){
-        var name = (input.value || '').trim();
-        if(!name){ showError('Name cannot be empty.'); return; }
-        if(name.length > 30){ showError('Max 30 characters.'); return; }
-
-        saveBtn.disabled = true;
-        fetch('/api/profile/name', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({
-                name: name,
-                avatar_key: selectedAvatarKey || '',
-                _csrf_token: getCSRF()
-            })
-        })
-        .then(function(r){ return r.json().then(function(d){ return {ok:r.ok,data:d}; }); })
-        .then(function(res){
-            if(!res.ok){ showError(res.data.error || 'Failed to save.'); return; }
-            selectedAvatarKey = res.data.avatar_key || null;
-            document.querySelectorAll('.hud-score.you .hs-name-text').forEach(function(el){
-                el.textContent = name; el.title = name;
-            });
-            var zn = document.getElementById('zone-display-name');
-            if(zn) zn.textContent = name;
-            refreshHumanAvatars(res.data);
-            close();
-        })
-        .catch(function(){ showError('Network error — try again.'); })
-        .finally(function(){ saveBtn.disabled = false; });
-    });
-})();
-</script>
+{% if game_mode|default('') == '1v1' %}
+{% include 'partials/player_profile_modal.html' %}
+{% endif %}
+{% include 'partials/friends_hub_modal.html' %}
+{% include 'partials/friend_social.html' %}
+{% include 'partials/guest_persist.html' %}
 
 </body>
 </html>

@@ -27,16 +27,12 @@
 
 <!-- ════════════════ HUD ════════════════ -->
 <header class="hud">
-    <div class="hud-brand">Chkobba</div>
+    {% include 'partials/hud_brand.html' %}
 
+    {% if not show_start_screen|default(false) %}
     <div class="hud-scores">
         <div class="hud-score you">
-            <button class="hs-label player-name-btn" id="open-name-modal" title="Change your name" aria-label="Change name">
-                <span id="hud-player-avatar" class="human-avatar-slot">
-                    {{ player_avatar(avatar_initial, avatar_color, human_avatar_url|default(none), false, 'avatar-hs') }}
-                </span>
-                <span class="hs-name-text" title="{{ display_name|e }}">{{ display_name }}</span>
-            </button>
+            <span class="hs-label">You</span>
             <span class="hs-val">{{ match_scores[0] }}</span>
         </div>
         {% if target_score %}
@@ -47,22 +43,19 @@
         {% endif %}
         <div class="hud-score bot">
             <span class="hs-label opp-hs-label">
-                {% if not show_start_screen|default(false) %}
                 {% if bot_avatar_url %}{{ player_avatar('', '', bot_avatar_url, false, 'avatar-hs') }}{% endif %}
                 <span class="hs-name-text">{{ bot_name|default('Bot') }}</span>
-                {% else %}
-                <span>Bot</span>
-                {% endif %}
             </span>
             <span class="hs-val">{{ match_scores[1] }}</span>
         </div>
     </div>
+    {% else %}
+    <div class="hud-spacer"></div>
+    {% endif %}
 
     <nav class="hud-nav">
-        <!-- SocketIO connection status indicator (Phase 3) -->
         <span class="conn-dot" title="Connection status" aria-hidden="true"></span>
         <span id="conn-status-text" class="sr-only" aria-live="polite"></span>
-        <!-- Sound toggle + slider -->
         <div class="sound-wrap">
             <button id="sound-btn" class="hud-icon-btn" title="Enable café sounds" aria-label="Toggle ambient sound">🔇</button>
             <div class="sound-panel">
@@ -70,7 +63,6 @@
                 <button id="toast-toggle-btn" class="toast-toggle" title="Toggle commentary">💬</button>
             </div>
         </div>
-        <a href="{{ url_for('history') }}" class="hud-btn" title="Match history">History</a>
         {% if not show_start_screen %}
         <a href="{{ url_for('index', debug=1 if not debug else 0) }}" class="hud-icon-btn" title="Debug">
             <span class="{% if debug %}dbg-active{% endif %}">⚙</span>
@@ -80,6 +72,7 @@
             <button class="hud-btn">Menu</button>
         </form>
         {% endif %}
+        {% include 'partials/hud_user_menu.html' %}
     </nav>
 </header>
 
@@ -2676,197 +2669,21 @@ document.addEventListener('DOMContentLoaded', function(){
         });
     }
 
-    // ── Invite a Friend ────────────────────────────────────────────────────
+    // ── Invite a Friend (modal: friends list + link) ───────────────────────
     var invBtn = document.getElementById('landing-invite-btn');
     if(invBtn){
         invBtn.addEventListener('click', function(){
-            invBtn.disabled = true;
-            invBtn.textContent = 'Creating room\u2026';
-            doPost('/api/rooms/invite', {target_score: 11})
-            .then(function(d){
-                if(d.room_id) window.location.href = '/play/' + d.room_id;
-                else{ invBtn.disabled=false; invBtn.textContent='🔗 Play with a Friend'; alert(d.error||'Error'); }
-            })
-            .catch(function(){ invBtn.disabled=false; invBtn.textContent='🔗 Play with a Friend'; });
+            if (window.openInviteFriendModal) window.openInviteFriendModal();
         });
     }
 })();
 </script>
 
-<!-- ════ Change-name modal ════ -->
-<div id="name-modal" class="name-modal-backdrop" role="dialog" aria-modal="true" aria-label="Change your name" hidden>
-    <div class="name-modal-box">
-        <h2 class="name-modal-title">Your profile</h2>
-        {% if player_avatar_options %}
-        <div class="avatar-picker" id="avatar-picker" role="radiogroup" aria-label="Choose avatar">
-            {% for opt in player_avatar_options %}
-            <button type="button" class="avatar-pick-btn{% if avatar_key == opt.key %} selected{% endif %}"
-                    data-key="{{ opt.key }}" aria-label="{{ opt.label }}" aria-pressed="{{ 'true' if avatar_key == opt.key else 'false' }}">
-                <img src="{{ opt.url }}" alt="">
-            </button>
-            {% endfor %}
-        </div>
-        {% endif %}
-        <div id="name-modal-avatar-preview" class="name-modal-avatar-preview human-avatar-slot">
-            {{ player_avatar(avatar_initial, avatar_color, human_avatar_url|default(none), false, 'name-modal-avatar-img') }}
-        </div>
-        <input id="name-modal-input" class="name-modal-input" type="text" maxlength="30"
-               placeholder="Enter a name…" autocomplete="off" spellcheck="false"
-               value="{{ display_name }}" aria-label="Display name">
-        <p id="name-modal-error" class="name-modal-error" hidden></p>
-        <div class="name-modal-actions">
-            <button id="name-modal-save" class="btn-deal name-modal-save">Save</button>
-            <button id="name-modal-cancel" class="name-modal-cancel">Cancel</button>
-        </div>
-    </div>
-</div>
-
-<script>
-(function(){
-    var modal   = document.getElementById('name-modal');
-    var input   = document.getElementById('name-modal-input');
-    var errEl   = document.getElementById('name-modal-error');
-    var saveBtn = document.getElementById('name-modal-save');
-    var preview = document.getElementById('name-modal-avatar-preview');
-    var picker  = document.getElementById('avatar-picker');
-    var selectedAvatarKey = {{ avatar_key|tojson }};
-
-    function avatarImgClassForSlot(el){
-        if(!el) return 'avatar-hs';
-        if(el.id === 'zone-player-avatar') return 'zone-avatar-sm';
-        if(el.id === 'name-modal-avatar-preview') return 'name-modal-avatar-img';
-        return 'avatar-hs';
-    }
-
-    function renderAvatarSlot(el, data){
-        if(!el) return;
-        var url = data.avatar_url;
-        var initial = data.avatar_initial || '?';
-        var color = data.avatar_color || '#888';
-        var imgCls = 'avatar-img ' + avatarImgClassForSlot(el);
-        if(url){
-            el.innerHTML = '<img class="'+imgCls+'" src="'+url+'" alt="">';
-        } else {
-            var dotCls = (el.id === 'zone-player-avatar') ? 'avatar-dot zone-avatar-sm' : 'avatar-dot avatar-hs';
-            if(el.id === 'name-modal-avatar-preview') dotCls = 'avatar-dot name-modal-avatar-img';
-            el.innerHTML = '<span class="'+dotCls+'" style="background:'+color+'">'+initial+'</span>';
-        }
-    }
-
-    function refreshHumanAvatars(data){
-        document.querySelectorAll('.human-avatar-slot').forEach(function(el){
-            renderAvatarSlot(el, data);
-        });
-    }
-
-    function syncPickerSelection(){
-        if(!picker) return;
-        picker.querySelectorAll('.avatar-pick-btn').forEach(function(btn){
-            var on = btn.dataset.key === selectedAvatarKey;
-            btn.classList.toggle('selected', on);
-            btn.setAttribute('aria-pressed', on ? 'true' : 'false');
-        });
-    }
-
-    function previewFromSelection(name){
-        var opt = picker ? picker.querySelector('.avatar-pick-btn[data-key="'+selectedAvatarKey+'"] img') : null;
-        var data = {
-            avatar_url: opt ? opt.getAttribute('src') : null,
-            avatar_initial: (name || '?')[0].toUpperCase(),
-            avatar_color: {{ avatar_color|tojson }}
-        };
-        if(preview) renderAvatarSlot(preview, data);
-    }
-
-    // A CSRF token is embedded in the page already (used by the form).
-    // Re-read it from the meta tag so this script works on every page load.
-    function getCSRF(){
-        var m = document.querySelector('meta[name="csrf-token"]');
-        return m ? m.getAttribute('content') : '';
-    }
-
-    function open(){
-        if(!modal) return;
-        errEl.hidden = true;
-        input.value = (document.getElementById('zone-display-name') ||
-                       document.querySelector('.hs-name-text') ||
-                       {textContent:''}).textContent.trim();
-        modal.hidden = false;
-        syncPickerSelection();
-        previewFromSelection(input.value.trim());
-        input.focus();
-        input.select();
-    }
-
-    function close(){ if(modal) modal.hidden = true; }
-
-    function showError(msg){ errEl.textContent = msg; errEl.hidden = false; }
-
-    function updateAvatarPreview(name){
-        previewFromSelection(name);
-    }
-
-    if(picker){
-        picker.addEventListener('click', function(e){
-            var btn = e.target.closest('.avatar-pick-btn');
-            if(!btn) return;
-            selectedAvatarKey = btn.dataset.key || null;
-            syncPickerSelection();
-            previewFromSelection((input.value || '').trim());
-        });
-    }
-
-    // Wire open triggers (both HUD button and landing edit button)
-    document.querySelectorAll('#open-name-modal').forEach(function(btn){
-        btn.addEventListener('click', open);
-    });
-
-    // Close on backdrop click
-    if(modal) modal.addEventListener('click', function(e){
-        if(e.target === modal) close();
-    });
-
-    document.getElementById('name-modal-cancel').addEventListener('click', close);
-
-    // Keyboard: Enter = save, Escape = close
-    if(input) input.addEventListener('keydown', function(e){
-        if(e.key === 'Enter')  saveBtn.click();
-        if(e.key === 'Escape') close();
-    });
-
-    // Live avatar preview
-    if(input) input.addEventListener('input', function(){ updateAvatarPreview(this.value); });
-
-    saveBtn.addEventListener('click', function(){
-        var name = (input.value || '').trim();
-        if(!name){ showError('Name cannot be empty.'); return; }
-        if(name.length > 30){ showError('Max 30 characters.'); return; }
-
-        saveBtn.disabled = true;
-        fetch('/api/profile/name', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({
-                name: name,
-                avatar_key: selectedAvatarKey || '',
-                _csrf_token: getCSRF()
-            })
-        })
-        .then(function(r){ return r.json().then(function(d){ return {ok:r.ok,data:d}; }); })
-        .then(function(res){
-            if(!res.ok){ showError(res.data.error || 'Failed to save.'); return; }
-            selectedAvatarKey = res.data.avatar_key || null;
-            document.querySelectorAll('.hs-name-text').forEach(function(el){ el.textContent = name; el.title = name; });
-            document.querySelectorAll('#zone-display-name').forEach(function(el){ el.textContent = name; });
-            document.querySelectorAll('.landing-player-name').forEach(function(el){ el.textContent = name; });
-            refreshHumanAvatars(res.data);
-            close();
-        })
-        .catch(function(){ showError('Network error — try again.'); })
-        .finally(function(){ saveBtn.disabled = false; });
-    });
-})();
-</script>
+{% include 'partials/name_modal.html' %}
+{% include 'partials/invite_friend_modal.html' %}
+{% include 'partials/friends_hub_modal.html' %}
+{% include 'partials/friend_social.html' %}
+{% include 'partials/guest_persist.html' %}
 
 </body>
 </html>

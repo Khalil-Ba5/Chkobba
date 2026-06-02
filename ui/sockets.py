@@ -36,6 +36,7 @@ from ui.app import (
     RoomNotFoundError,
     GamePhase,
     card_from_data,
+    _ensure_blob_player_avatars,
 )
 from engine.utils import card_to_str
 from services.names import avatar_color
@@ -55,6 +56,8 @@ _room_seqs:        dict[str, int]                = {}
 # A background task checks this before replacing the player with a bot.
 # Setting it to "" cancels the pending replacement.
 _disconnect_tasks: dict[str, str]                = {}
+# guest_id → sid for direct friend / invite notifications (any page).
+_guest_to_sid:     dict[str, str]                = {}
 
 BOT_THINKING_DELAY: float = (
     float(os.environ.get("BOT_THINKING_DELAY_MS", "800")) / 1000.0
@@ -67,6 +70,18 @@ SOLO_OPENING_BOT_DELAY_S: float = float(os.environ.get("SOLO_OPENING_BOT_DELAY_S
 def _next_seq(room_id: str) -> int:
     _room_seqs[room_id] = _room_seqs.get(room_id, 0) + 1
     return _room_seqs[room_id]
+
+
+def emit_to_guest(guest_id: str, event: str, payload: dict) -> bool:
+    """Deliver a socket event to a guest if they are connected."""
+    if not guest_id or guest_id in ("bot", "unknown"):
+        return False
+    sid = _guest_to_sid.get(guest_id)
+    if sid:
+        socketio.emit(event, payload, to=sid)
+        return True
+    socketio.emit(event, payload, room=f"guest:{guest_id}")
+    return False
 
 
 def _seat_to_sid(room_id: str, seat: int, blob: dict | None = None) -> str | None:
@@ -103,12 +118,18 @@ def on_connect():
     guest_id = session.get("guest_id", "unknown")
     _sid_to_room[request.sid] = None
     _sid_to_seat[request.sid] = 0
+    if guest_id and guest_id not in ("unknown", "bot"):
+        _guest_to_sid[guest_id] = request.sid
+        join_room(f"guest:{guest_id}")
     logger.info("[socket] connect  sid=%.8s  guest=%s", request.sid, guest_id)
 
 
 @socketio.on("disconnect")
 def on_disconnect():
     sid     = request.sid
+    guest_id = session.get("guest_id", "")
+    if guest_id and _guest_to_sid.get(guest_id) == sid:
+        _guest_to_sid.pop(guest_id, None)
     room_id = _sid_to_room.pop(sid, None)
     seat    = _sid_to_seat.pop(sid, 0)
 
@@ -1190,6 +1211,9 @@ def _start_mp_game(room_id: str, store) -> None:
     if blob is None or blob.get("status") != "starting":
         logger.info("[mp] game cancelled or status changed during countdown  room=%.8s", room_id)
         return
+
+    if _ensure_blob_player_avatars(blob):
+        store.set(room_id, blob)
 
     # ── Pick a random first player ──
     first_seat = random.randint(0, 1)

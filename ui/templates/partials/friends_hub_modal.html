@@ -1,0 +1,168 @@
+<div id="friends-hub-modal" class="friends-hub-backdrop" role="dialog" aria-modal="true" aria-label="Friends" hidden>
+    <div class="friends-hub-box" role="document">
+        <button type="button" class="friends-hub-close" id="friends-hub-close" aria-label="Close">&times;</button>
+        <h2 class="friends-hub-title">Friends</h2>
+
+        <section class="friends-hub-section" aria-labelledby="friends-hub-incoming-title">
+            <h3 class="friends-hub-section-title" id="friends-hub-incoming-title">Friend requests</h3>
+            <div id="friends-hub-incoming" class="friends-hub-list"></div>
+            <p id="friends-hub-incoming-empty" class="friends-hub-empty" hidden>No pending requests.</p>
+        </section>
+
+        <section class="friends-hub-section" aria-labelledby="friends-hub-sent-title">
+            <h3 class="friends-hub-section-title" id="friends-hub-sent-title">Sent invitations</h3>
+            <div id="friends-hub-sent" class="friends-hub-list"></div>
+            <p id="friends-hub-sent-empty" class="friends-hub-empty" hidden>No outgoing requests.</p>
+        </section>
+
+        <section class="friends-hub-section" aria-labelledby="friends-hub-friends-title">
+            <h3 class="friends-hub-section-title" id="friends-hub-friends-title">Your friends</h3>
+            <div id="friends-hub-friends" class="friends-hub-list"></div>
+            <p id="friends-hub-friends-empty" class="friends-hub-empty">
+                No friends yet. Play someone online and use <strong>Add friend</strong> on their profile.
+            </p>
+        </section>
+        <p id="friends-hub-error" class="friends-hub-error" hidden></p>
+    </div>
+</div>
+
+<script>
+(function(){
+    var modal = document.getElementById('friends-hub-modal');
+    if (!modal) return;
+
+    var closeBtn = document.getElementById('friends-hub-close');
+    var incomingEl = document.getElementById('friends-hub-incoming');
+    var incomingEmpty = document.getElementById('friends-hub-incoming-empty');
+    var sentEl = document.getElementById('friends-hub-sent');
+    var sentEmpty = document.getElementById('friends-hub-sent-empty');
+    var friendsEl = document.getElementById('friends-hub-friends');
+    var friendsEmpty = document.getElementById('friends-hub-friends-empty');
+    var errEl = document.getElementById('friends-hub-error');
+
+    function getCSRF(){
+        var m = document.querySelector('meta[name="csrf-token"]');
+        return m ? m.getAttribute('content') : '';
+    }
+
+    function postJson(url, body){
+        return fetch(url, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(Object.assign({_csrf_token: getCSRF()}, body || {}))
+        }).then(function(r){ return r.json().then(function(d){ return {ok: r.ok, data: d}; }); });
+    }
+
+    function renderPlayerAvatar(f){
+        if (f.avatar_url) {
+            return '<img class="avatar-img avatar-lg" src="'+f.avatar_url+'" alt="">';
+        }
+        var initial = f.avatar_initial || '?';
+        var color = f.avatar_color || '#888';
+        return '<span class="avatar-dot avatar-lg" style="background:'+color+'">'+initial+'</span>';
+    }
+
+    function renderIncomingRow(req){
+        var from = req.from || {};
+        var name = from.display_name || 'Player';
+        var row = document.createElement('div');
+        row.className = 'friends-hub-row';
+        row.innerHTML =
+            '<div class="friends-hub-player">'+renderPlayerAvatar(from)+
+            '<span class="friends-hub-name">'+name+'</span></div>'+
+            '<div class="friends-hub-actions">'+
+            '<button type="button" class="btn-deal friends-hub-accept" data-request-id="'+req.request_id+'">Accept</button>'+
+            '<button type="button" class="btn-deal btn-secondary friends-hub-decline" data-request-id="'+req.request_id+'">Decline</button>'+
+            '</div>';
+        row.querySelector('.friends-hub-accept').addEventListener('click', function(){
+            var id = req.request_id;
+            postJson('/api/friends/respond', {request_id: id, accept: true}).then(function(res){
+                if (!res.ok) {
+                    if (errEl) { errEl.textContent = res.data.error || 'Could not accept'; errEl.hidden = false; }
+                    return;
+                }
+                loadHub();
+                if (window.reloadLobbyFriendsList) window.reloadLobbyFriendsList();
+            });
+        });
+        row.querySelector('.friends-hub-decline').addEventListener('click', function(){
+            postJson('/api/friends/respond', {request_id: req.request_id, accept: false}).then(function(){
+                loadHub();
+            });
+        });
+        return row;
+    }
+
+    function renderSentRow(req){
+        var to = req.to || {};
+        var name = to.display_name || 'Player';
+        var row = document.createElement('div');
+        row.className = 'friends-hub-row';
+        row.innerHTML =
+            '<div class="friends-hub-player">'+renderPlayerAvatar(to)+
+            '<span class="friends-hub-name">'+name+'</span></div>'+
+            '<span class="friends-hub-pending">Pending</span>';
+        return row;
+    }
+
+    function renderFriendRow(f){
+        var row = document.createElement('div');
+        row.className = 'friends-hub-row';
+        row.innerHTML =
+            '<div class="friends-hub-player">'+renderPlayerAvatar(f)+
+            '<span class="friends-hub-name">'+(f.display_name || 'Friend')+'</span></div>';
+        return row;
+    }
+
+    function loadHub(){
+        if (errEl) errEl.hidden = true;
+        Promise.all([
+            fetch('/api/friends/requests', {credentials: 'same-origin'}).then(function(r){ return r.json(); }),
+            fetch('/api/friends/outgoing', {credentials: 'same-origin'}).then(function(r){ return r.json(); }),
+            fetch('/api/friends/list', {credentials: 'same-origin'}).then(function(r){ return r.json(); })
+        ]).then(function(results){
+            var incoming = (results[0] && results[0].requests) || [];
+            var sent = (results[1] && results[1].requests) || [];
+            var friends = (results[2] && results[2].friends) || [];
+
+            if (incomingEl) {
+                incomingEl.innerHTML = '';
+                incoming.forEach(function(req){ incomingEl.appendChild(renderIncomingRow(req)); });
+            }
+            if (incomingEmpty) incomingEmpty.hidden = incoming.length > 0;
+
+            if (sentEl) {
+                sentEl.innerHTML = '';
+                sent.forEach(function(req){ sentEl.appendChild(renderSentRow(req)); });
+            }
+            if (sentEmpty) sentEmpty.hidden = sent.length > 0;
+
+            if (friendsEl) {
+                friendsEl.innerHTML = '';
+                friends.forEach(function(f){ friendsEl.appendChild(renderFriendRow(f)); });
+            }
+            if (friendsEmpty) friendsEmpty.hidden = friends.length > 0;
+        }).catch(function(){
+            if (errEl) { errEl.textContent = 'Could not load friends.'; errEl.hidden = false; }
+        });
+    }
+
+    function open(){
+        modal.hidden = false;
+        loadHub();
+    }
+
+    function close(){ modal.hidden = true; }
+
+    window.openFriendsHub = open;
+    window.reloadFriendsHub = function(){
+        if (!modal.hidden) loadHub();
+    };
+
+    if (closeBtn) closeBtn.addEventListener('click', close);
+    modal.addEventListener('click', function(e){ if (e.target === modal) close(); });
+    document.addEventListener('keydown', function(e){
+        if (e.key === 'Escape' && !modal.hidden) close();
+    });
+})();
+</script>

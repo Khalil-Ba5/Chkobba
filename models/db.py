@@ -99,6 +99,35 @@ def init_models() -> None:
         ON mp_matches(players_json)
     """)
 
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS guest_friends (
+            guest_id        TEXT NOT NULL,
+            friend_guest_id TEXT NOT NULL,
+            created_at      TEXT NOT NULL,
+            PRIMARY KEY (guest_id, friend_guest_id)
+        )
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_guest_friends_friend
+        ON guest_friends(friend_guest_id)
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS guest_friend_requests (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            from_guest_id   TEXT NOT NULL,
+            to_guest_id     TEXT NOT NULL,
+            status          TEXT NOT NULL DEFAULT 'pending',
+            created_at      TEXT NOT NULL,
+            responded_at    TEXT,
+            UNIQUE(from_guest_id, to_guest_id)
+        )
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_friend_requests_to
+        ON guest_friend_requests(to_guest_id, status)
+    """)
+
     conn.commit()
     conn.close()
     logger.info("Multiplayer tables initialised in %s", DB_PATH)
@@ -122,6 +151,11 @@ def record_match(
     from datetime import datetime, timezone
     conn = _connect()
     try:
+        existing = conn.execute(
+            "SELECT 1 FROM mp_matches WHERE room_id = ?", (room_id,)
+        ).fetchone()
+        if existing:
+            return
         conn.execute(
             """
             INSERT INTO mp_matches
@@ -180,3 +214,35 @@ def get_user_matches(guest_id: str, limit: int = 20) -> list[dict]:
             "ended_at":    row["ended_at"],
         })
     return results
+
+
+def get_matches_between_players(
+    guest_id_a: str,
+    guest_id_b: str,
+    *,
+    limit: int = 150,
+) -> list[dict]:
+    """Matches where *both* guests played (intersection by room_id, not one player's full list)."""
+    a = (guest_id_a or "").strip()
+    b = (guest_id_b or "").strip()
+    if not a or not b or a == b:
+        return []
+
+    by_room: dict[str, dict] = {}
+    for m in get_user_matches(a, limit=limit):
+        by_room[m["room_id"]] = m
+
+    shared: list[dict] = []
+    seen_rooms: set[str] = set()
+    for m in get_user_matches(b, limit=limit):
+        rid = m["room_id"]
+        if rid in seen_rooms or rid not in by_room:
+            continue
+        match = by_room[rid]
+        gids = {p.get("guest_id") for p in match.get("players") or []}
+        if a in gids and b in gids:
+            seen_rooms.add(rid)
+            shared.append(match)
+
+    shared.sort(key=lambda x: x.get("id", 0), reverse=True)
+    return shared[:limit]

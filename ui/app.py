@@ -20,6 +20,7 @@ import logging
 import hmac
 import secrets
 import random
+from datetime import timedelta
 from pathlib import Path
 from functools import wraps
 from enum import Enum
@@ -160,6 +161,10 @@ app = Flask(
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "chkobba-dev-key")
 app.config["DEBUG"] = False
 app.config["DEBUG_MODE"] = False
+app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=365)
+
+GUEST_ID_COOKIE = "chk_guest_id"
+GUEST_ID_COOKIE_MAX_AGE = 365 * 24 * 60 * 60
 
 # Render sets RENDER=true; used to disable debug toggles and unsafe defaults in production.
 IS_PRODUCTION = os.environ.get("RENDER", "").lower() == "true"
@@ -188,6 +193,9 @@ socketio = SocketIO(
 app.game_store = get_game_store()
 app.matchmaking_queue = get_matchmaking_queue()
 
+# Pending direct play invites between friends: invite_id → metadata.
+_friend_play_invites: dict[str, dict] = {}
+
 TARGET_SCORES = [11, 21, 31]
 MP_TARGET_SCORES = [11, 21, 31]   # available target scores for multiplayer rooms
 
@@ -206,18 +214,34 @@ MP_TARGET_SCORES = [11, 21, 31]   # available target scores for multiplayer room
 # Guest-session middleware
 # ---------------------------------------------------------------------------
 
+def _hydrate_guest_profile_from_db(guest_id: str) -> None:
+    """Load saved display name and avatar from SQLite into the Flask session."""
+    guest = _get_guest(guest_id)
+    if not guest:
+        return
+    dn = (guest.get("display_name") or "").strip()
+    if dn:
+        session["display_name"] = dn
+    _resolve_guest_avatar_key(guest_id)
+
+
 @app.before_request
 def _ensure_guest_session() -> None:
     """Give every browser a persistent guest identity (UUID in session cookie).
 
-    This runs before every HTTP request (static files are excluded by Flask).
-    The guest row is created in SQLite only once; subsequent requests are
-    handled by the INSERT OR IGNORE inside ensure_guest().
-
-    Later, when the user registers an account, the account row is linked back
-    to this guest_id so match history is preserved.
+    Profile is stored in SQLite and restored via a long-lived guest-id cookie
+    when the Flask session expires.
     """
-    if "guest_id" not in session:
+    session.permanent = True
+    guest_id = session.get("guest_id")
+
+    if not guest_id:
+        restored = request.cookies.get(GUEST_ID_COOKIE)
+        if restored and _get_guest(restored):
+            guest_id = restored
+            session["guest_id"] = guest_id
+
+    if not guest_id:
         guest_id = secrets.token_hex(16)
         session["guest_id"] = guest_id
         name = generate_display_name()
@@ -226,15 +250,26 @@ def _ensure_guest_session() -> None:
         if is_valid_player_avatar_key(DEFAULT_PLAYER_AVATAR_KEY):
             session["avatar_key"] = DEFAULT_PLAYER_AVATAR_KEY
             _update_avatar_key(guest_id, DEFAULT_PLAYER_AVATAR_KEY)
-    elif "display_name" not in session:
-        # Returning visitor whose session predates the name feature — load from DB.
-        guest = _get_guest(session["guest_id"])
-        session["display_name"] = (
-            guest["display_name"] if guest and guest["display_name"] != "Guest"
-            else generate_display_name()
+    else:
+        _ensure_guest(guest_id, display_name=session.get("display_name", "Guest"))
+
+    _hydrate_guest_profile_from_db(guest_id)
+
+
+@app.after_request
+def _persist_guest_id_cookie(response):
+    """Mirror guest_id in a long-lived cookie so profile survives session expiry."""
+    guest_id = session.get("guest_id")
+    if guest_id:
+        response.set_cookie(
+            GUEST_ID_COOKIE,
+            guest_id,
+            max_age=GUEST_ID_COOKIE_MAX_AGE,
+            samesite="Lax",
+            secure=IS_PRODUCTION,
+            httponly=False,
         )
-    if "avatar_key" not in session:
-        _resolve_guest_avatar_key(session.get("guest_id", ""))
+    return response
 
 
 def csrf_protect(f):
@@ -352,6 +387,19 @@ def _resolve_guest_avatar_key(guest_id: str) -> str | None:
     return None
 
 
+def _player_at_seat(blob: dict | None, seat: int) -> dict | None:
+    """Return the room player dict for *seat* (not raw list index)."""
+    if not blob:
+        return None
+    players = blob.get("players", [])
+    for p in players:
+        if p.get("seat") == seat:
+            return p
+    if 0 <= seat < len(players):
+        return players[seat]
+    return None
+
+
 def _opponent_avatar_url(
     blob: dict | None,
     opp_id: int,
@@ -361,12 +409,9 @@ def _opponent_avatar_url(
 ) -> str | None:
     if is_solo:
         return _bot_avatar_url(opp_name)
-    if not blob:
+    p = _player_at_seat(blob, opp_id)
+    if p is None:
         return None
-    players = blob.get("players", [])
-    if opp_id >= len(players):
-        return None
-    p = players[opp_id]
     if p.get("is_bot"):
         return _bot_avatar_url(BOT_DEFAULT_NAME)
     url = p.get("avatar_url")
@@ -388,6 +433,93 @@ def _ensure_blob_player_avatars(blob: dict) -> bool:
         p.update(fields)
         changed = True
     return changed
+
+
+def _human_opponent_from_blob(blob: dict | None, my_seat: int) -> dict | None:
+    """Return the other human player in a 1v1 blob, or None (bot / missing)."""
+    if not blob or blob.get("mode") != "1v1":
+        return None
+    for p in blob.get("players", []):
+        if p.get("is_bot"):
+            continue
+        if p.get("seat") == my_seat:
+            continue
+        gid = p.get("guest_id") or ""
+        if gid and gid != "bot":
+            return p
+    return None
+
+
+def _opponent_profile_fields(
+    blob: dict | None,
+    opp_id: int,
+    *,
+    is_solo: bool,
+) -> dict:
+    """guest_id + is_human for the opponent (MP human only)."""
+    if is_solo or not blob:
+        return {"opponent_guest_id": None, "opponent_is_human": False}
+    p = _player_at_seat(blob, opp_id)
+    if p is None:
+        return {"opponent_guest_id": None, "opponent_is_human": False}
+    if p.get("is_bot"):
+        return {"opponent_guest_id": None, "opponent_is_human": False}
+    gid = p.get("guest_id") or ""
+    if not gid or gid == "bot":
+        return {"opponent_guest_id": None, "opponent_is_human": False}
+    return {"opponent_guest_id": gid, "opponent_is_human": True}
+
+
+def _opponent_avatar_extras(opp_name: str, guest_id: str | None) -> dict:
+    """Fallback avatar dot fields when opponent has no image URL."""
+    if not guest_id:
+        return {"opponent_avatar_color": None, "opponent_avatar_initial": None}
+    initial = opp_name[0].upper() if opp_name else "?"
+    return {
+        "opponent_avatar_color": avatar_color(guest_id),
+        "opponent_avatar_initial": initial,
+    }
+
+
+def _opponent_ui_fields(
+    blob: dict | None,
+    opp_id: int,
+    *,
+    is_solo: bool,
+    opp_name: str,
+) -> dict:
+    """Profile id, human flag, and fallback avatar dot for view_data / sockets."""
+    profile = _opponent_profile_fields(blob, opp_id, is_solo=is_solo)
+    return {
+        **profile,
+        **_opponent_avatar_extras(opp_name, profile.get("opponent_guest_id")),
+    }
+
+
+def _opp_ui_context(blob: dict | None, my_seat: int) -> dict:
+    """Opponent name, avatar URL, profile ids for play.html (lobby + in-game)."""
+    opp = _human_opponent_from_blob(blob, my_seat)
+    if not opp:
+        return {
+            "opponent_guest_id": None,
+            "opponent_is_human": False,
+            "opponent_avatar_color": None,
+            "opponent_avatar_initial": None,
+            "bot_name": "Opponent",
+            "bot_avatar_url": None,
+        }
+    gid = opp.get("guest_id") or ""
+    name = opp.get("display_name") or "Opponent"
+    opp_seat = opp.get("seat", 1 - my_seat)
+    profile = {"opponent_guest_id": gid, "opponent_is_human": True}
+    return {
+        **profile,
+        "bot_name": name,
+        "bot_avatar_url": _opponent_avatar_url(
+            blob, opp_seat, is_solo=False, opp_name=name
+        ),
+        **_opponent_avatar_extras(name, gid),
+    }
 
 
 def _sync_guest_profile_to_rooms(
@@ -454,6 +586,14 @@ def _apply_guest_profile(ctx: dict) -> None:
 def _guest_profile_kwargs() -> dict:
     ctx: dict = {}
     _apply_guest_profile(ctx)
+    return ctx
+
+
+def _merge_template_ctx(*layers: dict) -> dict:
+    """Merge template context dicts (last wins). Avoids duplicate ``**`` keyword errors."""
+    ctx: dict = {}
+    for layer in layers:
+        ctx.update(layer)
     return ctx
 
 
@@ -1456,12 +1596,31 @@ class GameManager:
         self.phase = GamePhase.ROUND_OVER
         self.save()
         
+    def _guest_identity_for_persist(self) -> tuple[str, str]:
+        """Resolve guest id + display name (works in HTTP and socket background tasks)."""
+        guest_id = ""
+        display_name = "Guest"
+        try:
+            guest_id = session.get("guest_id", "") or ""
+            display_name = session.get("display_name", "Guest") or "Guest"
+        except RuntimeError:
+            pass
+        if self._store and self.room_id and self.room_id != "__no_room__":
+            blob = self._store.get(self.room_id)
+            if blob:
+                for p in blob.get("players", []):
+                    if not p.get("is_bot"):
+                        guest_id = p.get("guest_id") or guest_id
+                        display_name = p.get("display_name") or display_name
+                        break
+        return guest_id, display_name
+
     def _persist_match(self) -> None:
         """Save the completed match to the database."""
         if self.match_start_time is None or self.target_score is None:
             logger.warning("Cannot persist match: missing start time or target score")
             return
-            
+
         try:
             duration = int(time() - self.match_start_time)
             save_match(
@@ -1470,11 +1629,41 @@ class GameManager:
                 bot_score=self.match_scores[1],
                 winner=self.match_winner,
                 duration_seconds=duration,
-                round_scores=self.round_history
+                round_scores=self.round_history,
             )
             logger.info("Match persisted to database")
         except Exception as e:
             logger.error("Failed to persist match: %s", e)
+
+        # Personal history page (mp_matches) — solo and multiplayer.
+        guest_id, display_name = self._guest_identity_for_persist()
+        if not guest_id or self.room_id in ("", "__no_room__"):
+            return
+
+        from models.db import record_match
+
+        if self.mode == "solo":
+            players_for_db = [
+                {"guest_id": guest_id, "display_name": display_name, "seat": 0},
+                {"guest_id": "bot", "display_name": BOT_DEFAULT_NAME, "seat": 1},
+            ]
+            winner_guest_id: str | None
+            if self.match_winner == 0:
+                winner_guest_id = guest_id
+            elif self.match_winner == 1:
+                winner_guest_id = "bot"
+            else:
+                winner_guest_id = None
+            try:
+                record_match(
+                    room_id=self.room_id,
+                    mode="solo",
+                    players=players_for_db,
+                    scores=list(self.match_scores),
+                    winner_guest_id=winner_guest_id,
+                )
+            except Exception as e:
+                logger.error("Failed to record solo match history: %s", e)
 
     def _view_data_cut_phase(self, viewer_seat: int, debug: bool, is_solo: bool) -> dict:
         """Snapshot while waiting for the cutter to choose keep vs discard."""
@@ -1491,9 +1680,9 @@ class GameManager:
         opp_mood = self._get_bot_mood() if is_solo else "😐"
         room_blob = self._store.get(self.room_id) if self._store else None
         if not is_solo and room_blob:
-            room_players = room_blob.get("players", [])
-            if opp_id < len(room_players):
-                opp_name = room_players[opp_id].get("display_name", "Opponent")
+            opp_p = _player_at_seat(room_blob, opp_id)
+            if opp_p:
+                opp_name = opp_p.get("display_name", "Opponent")
 
         return {
             "show_start_screen": False,
@@ -1526,6 +1715,9 @@ class GameManager:
             "bot_name": opp_name,
             "bot_mood": opp_mood,
             "bot_avatar_url": _opponent_avatar_url(
+                room_blob, opp_id, is_solo=is_solo, opp_name=opp_name
+            ),
+            **_opponent_ui_fields(
                 room_blob, opp_id, is_solo=is_solo, opp_name=opp_name
             ),
             "bot_hand_count": len(opp.hand),
@@ -1619,9 +1811,9 @@ class GameManager:
         opp_mood = self._get_bot_mood() if is_solo else "😐"
         room_blob = self._store.get(self.room_id) if self._store else None
         if not is_solo and room_blob:
-            room_players = room_blob.get("players", [])
-            if opp_id < len(room_players):
-                opp_name = room_players[opp_id].get("display_name", "Opponent")
+            opp_p = _player_at_seat(room_blob, opp_id)
+            if opp_p:
+                opp_name = opp_p.get("display_name", "Opponent")
 
         # Debug info
         debug_data = {}
@@ -1721,6 +1913,9 @@ class GameManager:
             "bot_avatar_url": _opponent_avatar_url(
                 room_blob, opp_id, is_solo=is_solo, opp_name=opp_name
             ),
+            **_opponent_ui_fields(
+                room_blob, opp_id, is_solo=is_solo, opp_name=opp_name
+            ),
             "bot_hand_count": len(opp.hand),
             "bot_captured_count": len(opp.captured_cards),
             "bot_chkobbas": opp.chkobbas,
@@ -1815,6 +2010,11 @@ def index():
     ctx = manager.view_data()
 
     _apply_guest_profile(ctx)
+
+    guest_id = session.get("guest_id", "")
+    from models.social import list_friend_ids
+
+    ctx["friends"] = _friends_list_for_session()
 
     return render_template("index.html", **ctx)
 
@@ -1982,12 +2182,415 @@ def api_update_name():
     logger.info("Guest %.8s changed name to %r avatar=%r", guest_id, name, avatar_key)
     return jsonify({
         "ok": True,
+        "guest_id": guest_id,
         "name": name,
         "avatar_key": avatar_key,
         "avatar_url": _player_avatar_url(avatar_key),
         "avatar_initial": name[0].upper() if name else "G",
         "avatar_color": avatar_color(guest_id),
     })
+
+
+@app.route("/api/session/restore", methods=["POST"])
+def api_session_restore():
+    """Re-attach a previous guest_id (e.g. from localStorage after cookies cleared)."""
+    data = request.get_json(force=True, silent=True) or {}
+    guest_id = (data.get("guest_id") or "").strip()
+    if not guest_id or len(guest_id) > 64:
+        return jsonify({"error": "Invalid guest id"}), 400
+    guest = _get_guest(guest_id)
+    if not guest:
+        return jsonify({"error": "Guest not found"}), 404
+
+    session.permanent = True
+    session["guest_id"] = guest_id
+    _hydrate_guest_profile_from_db(guest_id)
+    logger.info("Restored guest session %.8s", guest_id)
+    return jsonify({
+        "ok": True,
+        "guest_id": guest_id,
+        "name": session.get("display_name"),
+        "avatar_key": session.get("avatar_key"),
+        "avatar_url": _player_avatar_url(session.get("avatar_key")),
+        "avatar_initial": (session.get("display_name") or "G")[0].upper(),
+        "avatar_color": avatar_color(guest_id),
+    })
+
+
+@app.route("/api/players/<opponent_guest_id>/summary")
+def api_player_summary(opponent_guest_id: str):
+    """Head-to-head stats vs the current user (for opponent profile popup)."""
+    _ensure_guest_session()
+    viewer_id = session.get("guest_id", "")
+    if not viewer_id:
+        return jsonify({"error": "No guest session"}), 401
+    if opponent_guest_id == viewer_id:
+        return jsonify({"error": "Cannot view your own summary"}), 400
+    if opponent_guest_id in ("bot", "") or len(opponent_guest_id) > 64:
+        return jsonify({"error": "Invalid player"}), 400
+
+    from models.social import get_head_to_head_stats, get_friend_relation
+    from models.guests import get_guest as _get_guest_row
+
+    opp = _get_guest_row(opponent_guest_id)
+    display_name = "Player"
+    avatar_key = None
+    if opp:
+        display_name = (opp.get("display_name") or "Player").strip()
+        avatar_key = opp.get("avatar_key")
+
+    # Fallback name from active room if guest row is stale.
+    room_id = request.args.get("room_id")
+    if room_id:
+        blob = app.game_store.get(room_id)
+        if blob:
+            for p in blob.get("players", []):
+                if p.get("guest_id") == opponent_guest_id:
+                    display_name = p.get("display_name") or display_name
+                    if p.get("avatar_key"):
+                        avatar_key = p.get("avatar_key")
+                    break
+
+    h2h = get_head_to_head_stats(viewer_id, opponent_guest_id)
+    rel = get_friend_relation(viewer_id, opponent_guest_id)
+    return jsonify({
+        "guest_id": opponent_guest_id,
+        "display_name": display_name,
+        "avatar_url": _player_avatar_url(avatar_key),
+        "avatar_initial": display_name[0].upper() if display_name else "?",
+        "avatar_color": avatar_color(opponent_guest_id),
+        "head_to_head": h2h,
+        "is_friend": rel["status"] == "friends",
+        "friend_status": rel["status"],
+        "friend_request_id": rel["request_id"],
+        "is_self": False,
+    })
+
+
+def _friends_list_for_session() -> list[dict]:
+    """Accepted friends for invite UI (lobby, home, waiting room)."""
+    guest_id = session.get("guest_id", "")
+    from models.social import list_friend_ids
+
+    return [_guest_notify_payload(fid) for fid in list_friend_ids(guest_id)]
+
+
+def _guest_notify_payload(guest_id: str) -> dict:
+    """Minimal profile for socket notifications."""
+    from models.guests import get_guest as _get_guest_row
+
+    row = _get_guest_row(guest_id) if guest_id else None
+    name = (row.get("display_name") if row else None) or "Player"
+    key = row.get("avatar_key") if row else None
+    return {
+        "guest_id": guest_id,
+        "display_name": name,
+        "avatar_url": _player_avatar_url(key),
+        "avatar_initial": name[0].upper() if name else "?",
+        "avatar_color": avatar_color(guest_id),
+    }
+
+
+def _emit_friend_event(guest_id: str, event: str, payload: dict) -> None:
+    from ui.sockets import emit_to_guest
+
+    emit_to_guest(guest_id, event, payload)
+
+
+@app.route("/api/friends/add", methods=["POST"])
+def api_friends_add():
+    """Send a friend request (other player must accept)."""
+    _ensure_guest_session()
+    data = request.get_json(force=True, silent=True) or {}
+    token = session.get("_csrf_token")
+    if not token or not hmac.compare_digest(token, str(data.get("_csrf_token", ""))):
+        return jsonify({"error": "Invalid CSRF token"}), 403
+
+    viewer_id = session.get("guest_id", "")
+    friend_id = (data.get("guest_id") or "").strip()
+    if not viewer_id or not friend_id:
+        return jsonify({"error": "Missing guest id"}), 400
+    if friend_id == viewer_id:
+        return jsonify({"error": "Cannot add yourself"}), 400
+
+    from models.social import send_friend_request, get_friend_relation
+
+    rel = get_friend_relation(viewer_id, friend_id)
+    if rel["status"] == "friends":
+        return jsonify({"ok": True, "friend_status": "friends"})
+    if rel["status"] == "pending_sent":
+        return jsonify({"ok": True, "friend_status": "pending_sent"})
+
+    result = send_friend_request(viewer_id, friend_id)
+    if not result.get("ok"):
+        return jsonify({"error": result.get("error", "Could not send request")}), 400
+
+    request_id = result["request_id"]
+    _emit_friend_event(
+        friend_id,
+        "friend_request_received",
+        {
+            "request_id": request_id,
+            "from": _guest_notify_payload(viewer_id),
+        },
+    )
+    return jsonify({
+        "ok": True,
+        "friend_status": "pending_sent",
+        "request_id": request_id,
+    })
+
+
+@app.route("/api/friends/respond", methods=["POST"])
+def api_friends_respond():
+    """Accept or decline an incoming friend request."""
+    _ensure_guest_session()
+    data = request.get_json(force=True, silent=True) or {}
+    token = session.get("_csrf_token")
+    if not token or not hmac.compare_digest(token, str(data.get("_csrf_token", ""))):
+        return jsonify({"error": "Invalid CSRF token"}), 403
+
+    viewer_id = session.get("guest_id", "")
+    request_id = int(data.get("request_id") or 0)
+    accept = bool(data.get("accept"))
+
+    if not viewer_id or not request_id:
+        return jsonify({"error": "Missing data"}), 400
+
+    from models.social import respond_friend_request
+
+    result = respond_friend_request(request_id, viewer_id, accept=accept)
+    if not result.get("ok"):
+        return jsonify({"error": result.get("error", "Could not respond")}), 400
+
+    sender_id = result["from_guest_id"]
+    _emit_friend_event(
+        sender_id,
+        "friend_request_resolved",
+        {
+            "request_id": request_id,
+            "accept": accept,
+            "from": _guest_notify_payload(sender_id),
+            "to": _guest_notify_payload(viewer_id),
+            "friend_status": "friends" if accept else "declined",
+        },
+    )
+    return jsonify({
+        "ok": True,
+        "accept": accept,
+        "friend_status": "friends" if accept else "none",
+    })
+
+
+@app.route("/api/friends/requests", methods=["GET"])
+def api_friends_requests():
+    """Pending incoming friend requests."""
+    _ensure_guest_session()
+    viewer_id = session.get("guest_id", "")
+    from models.social import list_incoming_friend_requests
+
+    raw = list_incoming_friend_requests(viewer_id)
+    out = []
+    for r in raw:
+        out.append({
+            **r,
+            "from": _guest_notify_payload(r["from_guest_id"]),
+        })
+    return jsonify({"requests": out})
+
+
+@app.route("/api/friends/outgoing", methods=["GET"])
+def api_friends_outgoing():
+    """Pending outgoing friend requests sent by the current user."""
+    _ensure_guest_session()
+    viewer_id = session.get("guest_id", "")
+    from models.social import list_outgoing_friend_requests
+
+    raw = list_outgoing_friend_requests(viewer_id)
+    out = []
+    for r in raw:
+        out.append({
+            **r,
+            "to": _guest_notify_payload(r["to_guest_id"]),
+        })
+    return jsonify({"requests": out})
+
+
+@app.route("/api/friends/list", methods=["GET"])
+def api_friends_list():
+    """Friends list for invite UI."""
+    _ensure_guest_session()
+    viewer_id = session.get("guest_id", "")
+    from models.social import list_friend_ids
+
+    friends = [
+        _guest_notify_payload(fid) for fid in list_friend_ids(viewer_id)
+    ]
+    return jsonify({"friends": friends})
+
+
+@app.route("/api/friends/play-invite", methods=["POST"])
+def api_friends_play_invite():
+    """Invite a friend to a private 1v1 room."""
+    _ensure_guest_session()
+    data = request.get_json(force=True, silent=True) or {}
+    token = session.get("_csrf_token")
+    if not token or not hmac.compare_digest(token, str(data.get("_csrf_token", ""))):
+        return jsonify({"error": "Invalid CSRF token"}), 403
+
+    viewer_id = session.get("guest_id", "")
+    friend_id = (data.get("guest_id") or "").strip()
+    display_name = session.get("display_name", "Guest")
+    target_score = int(data.get("target_score", 11))
+    if target_score not in MP_TARGET_SCORES:
+        target_score = 11
+
+    if not viewer_id or not friend_id:
+        return jsonify({"error": "Missing guest id"}), 400
+
+    from models.social import is_friend
+
+    if not is_friend(viewer_id, friend_id):
+        return jsonify({"error": "You can only invite friends"}), 403
+
+    blob = _create_mp_room("private", viewer_id, display_name, target_score)
+    room_id = blob["room_id"]
+    blob["friend_invite_to"] = friend_id
+    blob["visibility"] = "friend_invite"
+    app.game_store.set(room_id, blob)
+
+    invite_id = secrets.token_hex(8)
+    _friend_play_invites[invite_id] = {
+        "invite_id": invite_id,
+        "room_id": room_id,
+        "from_guest_id": viewer_id,
+        "to_guest_id": friend_id,
+        "target_score": target_score,
+        "status": "pending",
+    }
+
+    _emit_friend_event(
+        friend_id,
+        "play_invite_received",
+        {
+            "invite_id": invite_id,
+            "room_id": room_id,
+            "target_score": target_score,
+            "from": _guest_notify_payload(viewer_id),
+        },
+    )
+    return jsonify({"ok": True, "invite_id": invite_id, "room_id": room_id})
+
+
+@app.route("/api/friends/play-invite/respond", methods=["POST"])
+def api_friends_play_invite_respond():
+    """Accept or decline a direct play invite."""
+    _ensure_guest_session()
+    data = request.get_json(force=True, silent=True) or {}
+    token = session.get("_csrf_token")
+    if not token or not hmac.compare_digest(token, str(data.get("_csrf_token", ""))):
+        return jsonify({"error": "Invalid CSRF token"}), 403
+
+    viewer_id = session.get("guest_id", "")
+    invite_id = (data.get("invite_id") or "").strip()
+    accept = bool(data.get("accept"))
+
+    if not viewer_id or not invite_id:
+        return jsonify({"error": "Missing data"}), 400
+
+    inv = _friend_play_invites.get(invite_id)
+    if not inv or inv.get("status") != "pending":
+        return jsonify({"error": "Invite not found or expired"}), 404
+    if inv["to_guest_id"] != viewer_id:
+        return jsonify({"error": "Not authorized"}), 403
+
+    inviter_id = inv["from_guest_id"]
+    room_id = inv["room_id"]
+
+    if not accept:
+        inv["status"] = "declined"
+        app.game_store.delete(room_id)
+        _emit_friend_event(
+            inviter_id,
+            "play_invite_resolved",
+            {"invite_id": invite_id, "accept": False, "to": _guest_notify_payload(viewer_id)},
+        )
+        return jsonify({"ok": True, "accept": False})
+
+    blob = app.game_store.get(room_id)
+    if blob is None:
+        inv["status"] = "expired"
+        return jsonify({"error": "Room expired"}), 404
+
+    display_name = session.get("display_name", "Guest")
+    from datetime import datetime, timezone
+
+    presence = _player_presence_fields(viewer_id)
+    blob["players"].append(
+        {
+            "guest_id": viewer_id,
+            "display_name": display_name,
+            "seat": 1,
+            "is_bot": False,
+            "connected": False,
+            "sid": None,
+            **presence,
+        }
+    )
+    blob["last_action_at"] = datetime.now(timezone.utc).isoformat()
+    blob["visibility"] = "private_matched"
+    app.game_store.set(room_id, blob)
+    inv["status"] = "accepted"
+
+    _emit_friend_event(
+        inviter_id,
+        "play_invite_resolved",
+        {
+            "invite_id": invite_id,
+            "accept": True,
+            "room_id": room_id,
+            "to": _guest_notify_payload(viewer_id),
+        },
+    )
+    socketio.emit(
+        "room_player_joined",
+        {
+            "seat": 1,
+            "display_name": display_name,
+            "guest_id": viewer_id,
+            "avatar_initial": display_name[0].upper(),
+            "avatar_color": avatar_color(viewer_id),
+            "avatar_key": presence["avatar_key"],
+            "avatar_url": presence["avatar_url"],
+            "room_id": room_id,
+        },
+        to=room_id,
+    )
+    return jsonify({
+        "ok": True,
+        "accept": True,
+        "room_id": room_id,
+        "play_url": url_for("play_room", room_id=room_id),
+    })
+
+
+@app.route("/api/friends/remove", methods=["POST"])
+def api_friends_remove():
+    _ensure_guest_session()
+    data = request.get_json(force=True, silent=True) or {}
+    token = session.get("_csrf_token")
+    if not token or not hmac.compare_digest(token, str(data.get("_csrf_token", ""))):
+        return jsonify({"error": "Invalid CSRF token"}), 403
+
+    viewer_id = session.get("guest_id", "")
+    friend_id = (data.get("guest_id") or "").strip()
+    if not viewer_id or not friend_id:
+        return jsonify({"error": "Missing guest id"}), 400
+
+    from models.social import remove_friend
+
+    remove_friend(viewer_id, friend_id)
+    return jsonify({"ok": True})
 
 
 @app.route("/next_round", methods=["POST"])
@@ -2070,14 +2673,13 @@ def lobby():
                 "target_score": blob.get("target_score_mp", 11),
             }
         )
-    _gid = session.get("guest_id", "")
-    _dn  = session.get("display_name", "Guest")
     profile = _guest_profile_kwargs()
     return render_template(
         "lobby.html",
-        open_rooms=open_rooms,
-        display_name=_dn,
-        **profile,
+        **_merge_template_ctx(
+            {"open_rooms": open_rooms, "friends": _friends_list_for_session()},
+            profile,
+        ),
     )
 
 
@@ -2097,14 +2699,18 @@ def play_room(room_id: str):
     if blob is None or blob.get("mode") not in ("1v1", "solo"):
         return render_template(
             "play.html",
-            room_not_found=True,
-            room_full=False,
-            blob={"room_id": room_id, "players": [], "target_score_mp": 11, "chat": []},
-            my_seat=0,
-            game_active=False,
-            invite_url=None,
-            **profile,
-            **_empty_game_ctx(),
+            **_merge_template_ctx(
+                {
+                    "room_not_found": True,
+                    "room_full": False,
+                    "blob": {"room_id": room_id, "players": [], "target_score_mp": 11, "chat": []},
+                    "my_seat": 0,
+                    "game_active": False,
+                    "invite_url": None,
+                },
+                profile,
+                _empty_game_ctx(),
+            ),
         )
 
     # Solo bot room: skip seat-claiming logic — the human is always seat 0.
@@ -2123,20 +2729,24 @@ def play_room(room_id: str):
             game_ctx["bot_name"] = BOT_DEFAULT_NAME
             game_ctx["bot_avatar_url"] = _bot_avatar_url(BOT_DEFAULT_NAME)
         # Strip keys that are passed explicitly to avoid duplicate-keyword errors.
-        for _k in ("my_seat", "room_id", "game_mode", "show_start_screen"):
+        for _k in ("my_seat", "room_id", "game_mode", "show_start_screen", "game_active"):
             game_ctx.pop(_k, None)
         return render_template(
             "play.html",
-            room_not_found=False,
-            room_full=False,
-            blob=blob,
-            room_id=room_id,          # explicit — prevents fallback to session solo_room_id
-            game_mode="solo",
-            my_seat=0,
-            game_active=game_active,
-            invite_url=None,
-            **profile,
-            **game_ctx,
+            **_merge_template_ctx(
+                {
+                    "room_not_found": False,
+                    "room_full": False,
+                    "blob": blob,
+                    "room_id": room_id,
+                    "game_mode": "solo",
+                    "my_seat": 0,
+                    "game_active": game_active,
+                    "invite_url": None,
+                },
+                profile,
+                game_ctx,
+            ),
         )
 
     # Find whether the visitor already has a seat.
@@ -2152,14 +2762,18 @@ def play_room(room_id: str):
         # Room is full — show a "game full" page.
         return render_template(
             "play.html",
-            room_not_found=False,
-            room_full=True,
-            blob=blob,
-            my_seat=0,
-            game_active=False,
-            invite_url=None,
-            **profile,
-            **_empty_game_ctx(),
+            **_merge_template_ctx(
+                {
+                    "room_not_found": False,
+                    "room_full": True,
+                    "blob": blob,
+                    "my_seat": 0,
+                    "game_active": False,
+                    "invite_url": None,
+                },
+                profile,
+                _empty_game_ctx(),
+            ),
         )
 
     if my_seat is None:
@@ -2189,6 +2803,7 @@ def play_room(room_id: str):
             {
                 "seat": my_seat,
                 "display_name": display_name,
+                "guest_id": guest_id,
                 "avatar_initial": display_name[0].upper(),
                 "avatar_color": avatar_color(guest_id),
                 "avatar_key": presence["avatar_key"],
@@ -2225,22 +2840,41 @@ def play_room(room_id: str):
         else None
     )
 
+    opp_ctx = _opp_ui_context(blob, my_seat)
+
     # Strip keys that are passed explicitly to avoid duplicate keyword arguments.
-    for _k in ("my_seat", "room_id", "game_mode", "show_start_screen", "game_active"):
+    for _k in (
+        "my_seat", "room_id", "game_mode", "show_start_screen", "game_active",
+        "opponent_guest_id", "opponent_is_human",
+        "opponent_avatar_color", "opponent_avatar_initial",
+    ):
         game_ctx.pop(_k, None)
+    # Avoid duplicate **kwargs (PEP 448): only one source for opponent display fields.
+    if game_active:
+        for _k in ("bot_avatar_url", "bot_name"):
+            opp_ctx.pop(_k, None)
+    else:
+        for _k in ("bot_avatar_url", "bot_name"):
+            game_ctx.pop(_k, None)
 
     return render_template(
         "play.html",
-        room_not_found=False,
-        room_full=False,
-        blob=blob,
-        room_id=room_id,
-        game_mode="1v1",
-        my_seat=my_seat,
-        game_active=game_active,
-        invite_url=invite_url,
-        **profile,
-        **game_ctx,
+        **_merge_template_ctx(
+            {
+                "room_not_found": False,
+                "room_full": False,
+                "blob": blob,
+                "room_id": room_id,
+                "game_mode": "1v1",
+                "my_seat": my_seat,
+                "game_active": game_active,
+                "invite_url": invite_url,
+                "friends": _friends_list_for_session(),
+            },
+            opp_ctx,
+            profile,
+            game_ctx,
+        ),
     )
 
 
@@ -2274,6 +2908,10 @@ def _empty_game_ctx() -> dict:
         "bot_name": "Opponent",
         "bot_mood": "😐",
         "bot_avatar_url": None,
+        "opponent_guest_id": None,
+        "opponent_is_human": False,
+        "opponent_avatar_color": None,
+        "opponent_avatar_initial": None,
         "bot_hand_count": 0,
         "bot_captured_count": 0,
         "bot_chkobbas": 0,
@@ -2289,7 +2927,7 @@ def _empty_game_ctx() -> dict:
         "awaiting_cut_choice": False,
         "cut_card": None,
         "is_opening_cutter": False,
-        "game_active": False,
+        "round_end_sweep": None,
     }
 
 
@@ -2353,6 +2991,7 @@ def api_quickmatch():
                 {
                     "seat": 1,
                     "display_name": display_name,
+                    "guest_id": guest_id,
                     "avatar_initial": display_name[0].upper(),
                     "avatar_color": avatar_color(guest_id),
                     "avatar_key": presence["avatar_key"],
@@ -2494,15 +3133,12 @@ def history():
     _ensure_guest_session()
     from models.db import get_user_matches
     guest_id = session.get("guest_id", "")
-    display_name = session.get("display_name", "Guest")
+    profile = _guest_profile_kwargs()
     matches = get_user_matches(guest_id, limit=20)
     return render_template(
         "history.html",
         matches=matches,
-        guest_id=guest_id,
-        display_name=display_name,
-        avatar_initial=display_name[0].upper() if display_name else "G",
-        avatar_color=avatar_color(guest_id),
+        **profile,
     )
 
 

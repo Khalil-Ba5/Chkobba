@@ -13,15 +13,16 @@
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js" crossorigin="anonymous" integrity="sha384-2huaZvOR9iDzHqslqwpR87isEmrfxqyWOF7hr7BY6KG0+hVKLoEXMPUJw3ynWuhO"></script>
 </head>
 <body class="lobby-page">
+{% from 'partials/player_avatar.html' import player_avatar %}
 
 <!-- ════════════════ HUD ════════════════ -->
 <header class="hud">
-    <div class="hud-brand">Chkobba</div>
-    <div class="hud-scores"></div>
+    {% include 'partials/hud_brand.html' %}
+    <div class="hud-spacer"></div>
     <nav class="hud-nav">
         <span class="conn-dot" title="Connection status" aria-hidden="true"></span>
-        <a href="{{ url_for('index') }}"  class="hud-btn">Home</a>
-        <a href="{{ url_for('history') }}" class="hud-btn">History</a>
+        <a href="{{ url_for('lobby') }}" class="hud-btn active">Lobby</a>
+        {% include 'partials/hud_user_menu.html' %}
     </nav>
 </header>
 
@@ -31,6 +32,42 @@
         <h1 class="lobby-title">Public Lobby</h1>
         <p class="lobby-sub">Join an open game or create your own</p>
     </div>
+
+    <!-- Friends — invite to private game -->
+    <section class="lobby-friends" id="lobby-friends-section" aria-labelledby="lobby-friends-title">
+        <h2 class="lobby-friends-title" id="lobby-friends-title">Friends</h2>
+        <p class="lobby-friends-hint">After you accept a friend request, invite them here to play a private 1v1.</p>
+        <div class="lobby-friends-target">
+            <span class="lobby-target-label">Play to</span>
+            <label class="lobby-target-opt">
+                <input type="radio" name="friend_invite_target" value="11" checked> <span>11</span>
+            </label>
+            <label class="lobby-target-opt">
+                <input type="radio" name="friend_invite_target" value="21"> <span>21</span>
+            </label>
+            <label class="lobby-target-opt">
+                <input type="radio" name="friend_invite_target" value="31"> <span>31</span>
+            </label>
+        </div>
+        <div class="lobby-friends-list" id="lobby-friends-list">
+            {% for f in friends|default([]) %}
+            <div class="lobby-friend-row" data-guest-id="{{ f.guest_id }}">
+                <div class="lobby-friend-player">
+                    {% if f.avatar_url %}
+                    <img class="avatar-img avatar-lg" src="{{ f.avatar_url }}" alt="">
+                    {% else %}
+                    <span class="avatar-dot avatar-lg" style="background:{{ f.avatar_color }}">{{ f.avatar_initial }}</span>
+                    {% endif %}
+                    <span class="lobby-friend-name">{{ f.display_name }}</span>
+                </div>
+                <button type="button" class="btn-lobby-join lobby-friend-invite-btn" data-guest-id="{{ f.guest_id }}">Invite to play</button>
+            </div>
+            {% endfor %}
+        </div>
+        <p class="lobby-friends-empty" id="lobby-friends-empty"{% if friends|default([])|length > 0 %} hidden{% endif %}>
+            No friends yet. Play someone online and use <strong>Add friend</strong> on their avatar.
+        </p>
+    </section>
 
     <!-- Create a public room -->
     <div class="lobby-actions">
@@ -151,6 +188,101 @@
             .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
     }
 
+    function friendInviteTarget(){
+        var radios = document.querySelectorAll('input[name="friend_invite_target"]');
+        var target = 11;
+        radios.forEach(function(r){ if(r.checked) target = parseInt(r.value, 10); });
+        return target;
+    }
+
+    function inviteFriendToPlay(guestId, btn){
+        if(!guestId) return;
+        if(btn){ btn.disabled = true; btn.textContent = 'Sending…'; }
+        fetch('/api/friends/play-invite', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                _csrf_token: CSRF,
+                guest_id: guestId,
+                target_score: friendInviteTarget()
+            })
+        })
+        .then(function(r){ return r.json().then(function(d){ return {ok: r.ok, data: d}; }); })
+        .then(function(res){
+            if(btn){ btn.disabled = false; btn.textContent = 'Invite to play'; }
+            if(!res.ok){
+                alert((res.data && res.data.error) || 'Could not send invite.');
+                return;
+            }
+            if(res.data.room_id){
+                window.location.href = '/play/' + res.data.room_id;
+            }
+        })
+        .catch(function(){
+            if(btn){ btn.disabled = false; btn.textContent = 'Invite to play'; }
+            alert('Network error.');
+        });
+    }
+
+    function renderFriendRow(f){
+        var row = document.createElement('div');
+        row.className = 'lobby-friend-row';
+        row.dataset.guestId = f.guest_id || '';
+        var av = f.avatar_url
+            ? '<img class="avatar-img avatar-lg" src="'+escHtml(f.avatar_url)+'" alt="">'
+            : '<span class="avatar-dot avatar-lg" style="background:'+escHtml(f.avatar_color||'#888')+'">'
+              + escHtml(f.avatar_initial || '?') + '</span>';
+        row.innerHTML =
+            '<div class="lobby-friend-player">'+av
+            + '<span class="lobby-friend-name">'+escHtml(f.display_name || 'Friend')+'</span></div>'
+            + '<button type="button" class="btn-lobby-join lobby-friend-invite-btn">Invite to play</button>';
+        var btn = row.querySelector('.lobby-friend-invite-btn');
+        btn.addEventListener('click', function(){
+            inviteFriendToPlay(f.guest_id, btn);
+        });
+        return row;
+    }
+
+    function bindExistingFriendRows(){
+        document.querySelectorAll('.lobby-friend-row .lobby-friend-invite-btn').forEach(function(btn){
+            if(btn._bound) return;
+            btn._bound = true;
+            var row = btn.closest('.lobby-friend-row');
+            var gid = row && row.dataset.guestId;
+            btn.addEventListener('click', function(){
+                inviteFriendToPlay(gid, btn);
+            });
+        });
+    }
+
+    function loadFriendsList(){
+        var list = document.getElementById('lobby-friends-list');
+        var empty = document.getElementById('lobby-friends-empty');
+        if(!list) return;
+        fetch('/api/friends/list', {credentials: 'same-origin'})
+            .then(function(r){
+                if(!r.ok) throw new Error('friends list ' + r.status);
+                return r.json();
+            })
+            .then(function(data){
+                var friends = (data && data.friends) || [];
+                list.innerHTML = '';
+                if(!friends.length){
+                    if(empty) empty.hidden = false;
+                    return;
+                }
+                if(empty) empty.hidden = true;
+                friends.forEach(function(f){ list.appendChild(renderFriendRow(f)); });
+            })
+            .catch(function(){
+                bindExistingFriendRows();
+            });
+    }
+
+    bindExistingFriendRows();
+    loadFriendsList();
+    window.reloadLobbyFriendsList = loadFriendsList;
+
     // ── Create public room ──────────────────────────────────────────────
     var createBtn    = document.getElementById('create-public-btn');
     var targetSel    = document.getElementById('create-target-selector');
@@ -190,5 +322,9 @@
     });
 })();
 </script>
+{% include 'partials/name_modal.html' %}
+{% include 'partials/friends_hub_modal.html' %}
+{% include 'partials/friend_social.html' %}
+{% include 'partials/guest_persist.html' %}
 </body>
 </html>

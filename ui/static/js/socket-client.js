@@ -145,6 +145,10 @@
         // Matchmaking
         'matchmaking_status',
         'player_profile_updated',
+        'friend_request_received',
+        'friend_request_resolved',
+        'play_invite_received',
+        'play_invite_resolved',
       ];
       deltaEvents.forEach(function (evt) {
         self.socket.on(evt, function (data) {

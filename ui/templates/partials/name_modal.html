@@ -1,0 +1,169 @@
+{% from 'partials/player_avatar.html' import player_avatar %}
+<div id="name-modal" class="name-modal-backdrop" role="dialog" aria-modal="true" aria-label="Change your name" hidden>
+    <div class="name-modal-box">
+        <h2 class="name-modal-title">Your profile</h2>
+        {% if player_avatar_options %}
+        <div class="avatar-picker" id="avatar-picker" role="radiogroup" aria-label="Choose avatar">
+            {% for opt in player_avatar_options %}
+            <button type="button" class="avatar-pick-btn{% if avatar_key == opt.key %} selected{% endif %}"
+                    data-key="{{ opt.key }}" aria-label="{{ opt.label }}" aria-pressed="{{ 'true' if avatar_key == opt.key else 'false' }}">
+                <img src="{{ opt.url }}" alt="">
+            </button>
+            {% endfor %}
+        </div>
+        {% endif %}
+        <div id="name-modal-avatar-preview" class="name-modal-avatar-preview human-avatar-slot">
+            {{ player_avatar(avatar_initial, avatar_color, human_avatar_url|default(none), false, 'name-modal-avatar-img') }}
+        </div>
+        <input id="name-modal-input" class="name-modal-input" type="text" maxlength="30"
+               placeholder="Enter a name…" autocomplete="off" spellcheck="false"
+               value="{{ display_name }}" aria-label="Display name">
+        <p id="name-modal-error" class="name-modal-error" hidden></p>
+        <div class="name-modal-actions">
+            <button id="name-modal-save" class="btn-deal name-modal-save">Save</button>
+            <button id="name-modal-cancel" class="name-modal-cancel">Cancel</button>
+        </div>
+    </div>
+</div>
+
+<script>
+(function(){
+    var modal   = document.getElementById('name-modal');
+    if (!modal) return;
+    var input   = document.getElementById('name-modal-input');
+    var errEl   = document.getElementById('name-modal-error');
+    var saveBtn = document.getElementById('name-modal-save');
+    var preview = document.getElementById('name-modal-avatar-preview');
+    var picker  = document.getElementById('avatar-picker');
+    var selectedAvatarKey = {{ avatar_key|default(none)|tojson }};
+
+    function avatarImgClassForSlot(el){
+        if(!el) return 'avatar-hs';
+        if(el.id === 'zone-player-avatar') return 'zone-avatar-sm';
+        if(el.id === 'name-modal-avatar-preview') return 'name-modal-avatar-img';
+        return 'avatar-hs';
+    }
+
+    function renderAvatarSlot(el, data){
+        if(!el) return;
+        var url = data.avatar_url;
+        var initial = data.avatar_initial || '?';
+        var color = data.avatar_color || '#888';
+        var imgCls = 'avatar-img ' + avatarImgClassForSlot(el);
+        if(url){
+            el.innerHTML = '<img class="'+imgCls+'" src="'+url+'" alt="">';
+        } else {
+            var dotCls = (el.id === 'zone-player-avatar') ? 'avatar-dot zone-avatar-sm' : 'avatar-dot avatar-hs';
+            if(el.id === 'name-modal-avatar-preview') dotCls = 'avatar-dot name-modal-avatar-img';
+            el.innerHTML = '<span class="'+dotCls+'" style="background:'+color+'">'+initial+'</span>';
+        }
+    }
+
+    function refreshHumanAvatars(data){
+        document.querySelectorAll('.human-avatar-slot').forEach(function(el){
+            renderAvatarSlot(el, data);
+        });
+    }
+
+    function syncPickerSelection(){
+        if(!picker) return;
+        picker.querySelectorAll('.avatar-pick-btn').forEach(function(btn){
+            var on = btn.dataset.key === selectedAvatarKey;
+            btn.classList.toggle('selected', on);
+            btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+        });
+    }
+
+    function previewFromSelection(name){
+        var opt = picker ? picker.querySelector('.avatar-pick-btn[data-key="'+selectedAvatarKey+'"] img') : null;
+        var data = {
+            avatar_url: opt ? opt.getAttribute('src') : null,
+            avatar_initial: (name || '?')[0].toUpperCase(),
+            avatar_color: {{ avatar_color|tojson }}
+        };
+        if(preview) renderAvatarSlot(preview, data);
+    }
+
+    function getCSRF(){
+        var m = document.querySelector('meta[name="csrf-token"]');
+        return m ? m.getAttribute('content') : '';
+    }
+
+    function open(){
+        errEl.hidden = true;
+        input.value = (document.getElementById('zone-display-name') ||
+                       document.querySelector('.hud-user-name') ||
+                       document.querySelector('.hs-name-text') ||
+                       {textContent:''}).textContent.trim();
+        modal.hidden = false;
+        syncPickerSelection();
+        previewFromSelection(input.value.trim());
+        input.focus();
+        input.select();
+    }
+
+    function close(){ modal.hidden = true; }
+
+    function showError(msg){ errEl.textContent = msg; errEl.hidden = false; }
+
+    if(picker){
+        picker.addEventListener('click', function(e){
+            var btn = e.target.closest('.avatar-pick-btn');
+            if(!btn) return;
+            selectedAvatarKey = btn.dataset.key || null;
+            syncPickerSelection();
+            previewFromSelection((input.value || '').trim());
+        });
+    }
+
+    document.querySelectorAll('#open-name-modal, #hud-menu-edit').forEach(function(btn){
+        btn.addEventListener('click', open);
+    });
+    document.addEventListener('chk-open-name-modal', open);
+
+    modal.addEventListener('click', function(e){
+        if(e.target === modal) close();
+    });
+
+    document.getElementById('name-modal-cancel').addEventListener('click', close);
+
+    if(input) input.addEventListener('keydown', function(e){
+        if(e.key === 'Enter')  saveBtn.click();
+        if(e.key === 'Escape') close();
+    });
+
+    if(input) input.addEventListener('input', function(){ previewFromSelection(this.value); });
+
+    saveBtn.addEventListener('click', function(){
+        var name = (input.value || '').trim();
+        if(!name){ showError('Name cannot be empty.'); return; }
+        if(name.length > 30){ showError('Max 30 characters.'); return; }
+
+        saveBtn.disabled = true;
+        fetch('/api/profile/name', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                name: name,
+                avatar_key: selectedAvatarKey || '',
+                _csrf_token: getCSRF()
+            })
+        })
+        .then(function(r){ return r.json().then(function(d){ return {ok:r.ok,data:d}; }); })
+        .then(function(res){
+            if(!res.ok){ showError(res.data.error || 'Failed to save.'); return; }
+            selectedAvatarKey = res.data.avatar_key || null;
+            document.querySelectorAll('.hs-name-text, .hud-user-name').forEach(function(el){
+                el.textContent = name; el.title = name;
+            });
+            document.querySelectorAll('#zone-display-name').forEach(function(el){ el.textContent = name; });
+            document.querySelectorAll('.landing-player-name').forEach(function(el){ el.textContent = name; });
+            refreshHumanAvatars(res.data);
+            if (res.data.guest_id) localStorage.setItem('chk_guest_id', res.data.guest_id);
+            close();
+        })
+        .catch(function(){ showError('Network error — try again.'); })
+        .finally(function(){ saveBtn.disabled = false; });
+    });
+})();
+</script>

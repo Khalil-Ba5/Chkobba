@@ -1,0 +1,68 @@
+{% from 'partials/player_avatar.html' import player_avatar %}
+<div class="hud-user-wrap">
+    <button type="button" class="hud-user-trigger" id="hud-user-trigger"
+            aria-expanded="false" aria-haspopup="true" aria-controls="hud-user-dropdown"
+            title="Account menu">
+        <span id="hud-player-avatar" class="human-avatar-slot">
+            {{ player_avatar(avatar_initial, avatar_color, human_avatar_url|default(none), false, 'avatar-hs') }}
+        </span>
+        <span class="hud-user-name hs-name-text" title="{{ display_name|e }}">{{ display_name }}</span>
+        <span class="hud-user-chevron" aria-hidden="true">▾</span>
+    </button>
+    <div class="hud-user-dropdown" id="hud-user-dropdown" role="menu" hidden>
+        <button type="button" class="hud-user-menu-item" id="hud-menu-edit" role="menuitem">Edit profile</button>
+        <a href="{{ url_for('history') }}" class="hud-user-menu-item" role="menuitem">History</a>
+        <button type="button" class="hud-user-menu-item" id="hud-menu-friends" role="menuitem">Friends</button>
+    </div>
+</div>
+<script>
+(function(){
+    var trigger = document.getElementById('hud-user-trigger');
+    var menu = document.getElementById('hud-user-dropdown');
+    if (!trigger || !menu) return;
+
+    function closeMenu(){
+        menu.hidden = true;
+        trigger.setAttribute('aria-expanded', 'false');
+    }
+
+    function openMenu(){
+        menu.hidden = false;
+        trigger.setAttribute('aria-expanded', 'true');
+    }
+
+    trigger.addEventListener('click', function(e){
+        e.stopPropagation();
+        if (menu.hidden) openMenu();
+        else closeMenu();
+    });
+
+    document.addEventListener('click', function(e){
+        if (!menu.hidden && !menu.contains(e.target) && e.target !== trigger && !trigger.contains(e.target)) {
+            closeMenu();
+        }
+    });
+
+    document.addEventListener('keydown', function(e){
+        if (e.key === 'Escape') closeMenu();
+    });
+
+    var editBtn = document.getElementById('hud-menu-edit');
+    if (editBtn) {
+        editBtn.addEventListener('click', function(){
+            closeMenu();
+            var legacy = document.getElementById('open-name-modal');
+            if (legacy) { legacy.click(); return; }
+            document.dispatchEvent(new CustomEvent('chk-open-name-modal'));
+        });
+    }
+
+    var friendsBtn = document.getElementById('hud-menu-friends');
+    if (friendsBtn) {
+        friendsBtn.addEventListener('click', function(){
+            closeMenu();
+            if (typeof window.openFriendsHub === 'function') window.openFriendsHub();
+        });
+    }
+})();
+</script>

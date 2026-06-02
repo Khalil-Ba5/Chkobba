@@ -1,0 +1,194 @@
+{# Invite friends to play — home page & anywhere friends list is passed #}
+<div id="invite-friend-modal" class="invite-friend-backdrop" role="dialog" aria-modal="true" aria-label="Invite a friend" hidden>
+    <div class="invite-friend-box" role="document">
+        <button type="button" class="invite-friend-close" id="invite-friend-close" aria-label="Close">&times;</button>
+        <h2 class="invite-friend-title">Play with a friend</h2>
+
+        <p class="invite-friend-section-label">Your friends</p>
+        <div class="invite-friend-target lobby-friends-target">
+            <span class="lobby-target-label">Play to</span>
+            <label class="lobby-target-opt">
+                <input type="radio" name="invite_friend_target" value="11" checked> <span>11</span>
+            </label>
+            <label class="lobby-target-opt">
+                <input type="radio" name="invite_friend_target" value="21"> <span>21</span>
+            </label>
+            <label class="lobby-target-opt">
+                <input type="radio" name="invite_friend_target" value="31"> <span>31</span>
+            </label>
+        </div>
+        <div class="lobby-friends-list invite-friend-list" id="invite-friend-list">
+            {% for f in friends|default([]) %}
+            <div class="lobby-friend-row" data-guest-id="{{ f.guest_id }}">
+                <div class="lobby-friend-player">
+                    {% if f.avatar_url %}
+                    <img class="avatar-img avatar-lg" src="{{ f.avatar_url }}" alt="">
+                    {% else %}
+                    <span class="avatar-dot avatar-lg" style="background:{{ f.avatar_color }}">{{ f.avatar_initial }}</span>
+                    {% endif %}
+                    <span class="lobby-friend-name">{{ f.display_name }}</span>
+                </div>
+                <button type="button" class="btn-lobby-join lobby-friend-invite-btn" data-guest-id="{{ f.guest_id }}">Invite</button>
+            </div>
+            {% endfor %}
+        </div>
+        <p class="invite-friend-empty" id="invite-friend-empty"{% if friends|default([])|length > 0 %} hidden{% endif %}>
+            No friends yet. Add someone during an online game (their avatar → Add friend), then they accept.
+        </p>
+
+        <div class="invite-friend-divider"><span>or</span></div>
+        <p class="invite-friend-section-label">Invite by link</p>
+        <p class="invite-friend-link-hint">Create a room and send the link to anyone (they don’t need to be on your friends list).</p>
+        <button type="button" id="invite-friend-link-btn" class="btn-deal invite-friend-link-btn">Create room &amp; copy link</button>
+    </div>
+</div>
+
+<script>
+(function(){
+    var modal = document.getElementById('invite-friend-modal');
+    if (!modal) return;
+
+    var closeBtn = document.getElementById('invite-friend-close');
+    var listEl = document.getElementById('invite-friend-list');
+    var emptyEl = document.getElementById('invite-friend-empty');
+    var linkBtn = document.getElementById('invite-friend-link-btn');
+
+    function getCSRF(){
+        var m = document.querySelector('meta[name="csrf-token"]');
+        return m ? m.getAttribute('content') : '';
+    }
+
+    function inviteTarget(){
+        var t = 11;
+        document.querySelectorAll('input[name="invite_friend_target"]').forEach(function(r){
+            if (r.checked) t = parseInt(r.value, 10) || 11;
+        });
+        return t;
+    }
+
+    function esc(s){
+        return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+
+    function inviteFriend(guestId, btn){
+        if (!guestId) return;
+        if (btn) { btn.disabled = true; btn.textContent = '…'; }
+        fetch('/api/friends/play-invite', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            credentials: 'same-origin',
+            body: JSON.stringify({
+                _csrf_token: getCSRF(),
+                guest_id: guestId,
+                target_score: inviteTarget()
+            })
+        })
+        .then(function(r){ return r.json().then(function(d){ return {ok: r.ok, data: d}; }); })
+        .then(function(res){
+            if (btn) { btn.disabled = false; btn.textContent = 'Invite'; }
+            if (!res.ok) {
+                alert((res.data && res.data.error) || 'Could not invite.');
+                return;
+            }
+            if (res.data.room_id) window.location.href = '/play/' + res.data.room_id;
+        })
+        .catch(function(){
+            if (btn) { btn.disabled = false; btn.textContent = 'Invite'; }
+            alert('Network error.');
+        });
+    }
+
+    function bindRow(row){
+        var btn = row.querySelector('.lobby-friend-invite-btn');
+        var gid = row.dataset.guestId || (btn && btn.dataset.guestId);
+        if (!btn || btn._bound) return;
+        btn._bound = true;
+        btn.addEventListener('click', function(){ inviteFriend(gid, btn); });
+    }
+
+    function renderFriends(friends){
+        if (!listEl) return;
+        listEl.innerHTML = '';
+        if (!friends.length) {
+            if (emptyEl) emptyEl.hidden = false;
+            return;
+        }
+        if (emptyEl) emptyEl.hidden = true;
+        friends.forEach(function(f){
+            var row = document.createElement('div');
+            row.className = 'lobby-friend-row';
+            row.dataset.guestId = f.guest_id || '';
+            var av = f.avatar_url
+                ? '<img class="avatar-img avatar-lg" src="'+esc(f.avatar_url)+'" alt="">'
+                : '<span class="avatar-dot avatar-lg" style="background:'+esc(f.avatar_color||'#888')+'">'
+                  + esc(f.avatar_initial || '?') + '</span>';
+            row.innerHTML =
+                '<div class="lobby-friend-player">'+av
+                + '<span class="lobby-friend-name">'+esc(f.display_name || 'Friend')+'</span></div>'
+                + '<button type="button" class="btn-lobby-join lobby-friend-invite-btn">Invite</button>';
+            listEl.appendChild(row);
+            bindRow(row);
+        });
+    }
+
+    function refreshFriends(){
+        fetch('/api/friends/list', {credentials: 'same-origin'})
+            .then(function(r){ return r.ok ? r.json() : Promise.reject(); })
+            .then(function(d){ renderFriends((d && d.friends) || []); })
+            .catch(function(){
+                document.querySelectorAll('#invite-friend-list .lobby-friend-row').forEach(bindRow);
+            });
+    }
+
+    function openModal(){
+        modal.hidden = false;
+        refreshFriends();
+    }
+
+    function closeModal(){
+        modal.hidden = true;
+    }
+
+    window.openInviteFriendModal = openModal;
+
+    if (closeBtn) closeBtn.addEventListener('click', closeModal);
+    modal.addEventListener('click', function(e){ if (e.target === modal) closeModal(); });
+    document.addEventListener('keydown', function(e){
+        if (e.key === 'Escape' && !modal.hidden) closeModal();
+    });
+
+    document.querySelectorAll('#invite-friend-list .lobby-friend-row').forEach(bindRow);
+
+    if (linkBtn) {
+        linkBtn.addEventListener('click', function(){
+            linkBtn.disabled = true;
+            linkBtn.textContent = 'Creating…';
+            fetch('/api/rooms/invite', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                credentials: 'same-origin',
+                body: JSON.stringify({_csrf_token: getCSRF(), target_score: inviteTarget()})
+            })
+            .then(function(r){ return r.json(); })
+            .then(function(d){
+                if (d.room_id) window.location.href = '/play/' + d.room_id;
+                else {
+                    linkBtn.disabled = false;
+                    linkBtn.textContent = 'Create room & copy link';
+                    alert(d.error || 'Could not create room.');
+                }
+            })
+            .catch(function(){
+                linkBtn.disabled = false;
+                linkBtn.textContent = 'Create room & copy link';
+            });
+        });
+    }
+
+    var oldReload = window.reloadLobbyFriendsList;
+    window.reloadLobbyFriendsList = function(){
+        if (oldReload) oldReload();
+        if (!modal.hidden) refreshFriends();
+    };
+})();
+</script>

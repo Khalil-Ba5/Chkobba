@@ -1,0 +1,182 @@
+{# Global friend-request and play-invite toasts (any page with socket.io) #}
+<div id="friend-social-toast" class="friend-social-toast hidden" role="alert" aria-live="polite">
+    <div class="friend-social-toast-inner">
+        <p id="friend-social-toast-msg" class="friend-social-toast-msg"></p>
+        <div id="friend-social-toast-actions" class="friend-social-toast-actions"></div>
+        <button type="button" class="friend-social-toast-dismiss" id="friend-social-toast-dismiss" aria-label="Dismiss">&times;</button>
+    </div>
+</div>
+
+<script>
+(function(){
+    var toast = document.getElementById('friend-social-toast');
+    var msgEl = document.getElementById('friend-social-toast-msg');
+    var actionsEl = document.getElementById('friend-social-toast-actions');
+    var dismissBtn = document.getElementById('friend-social-toast-dismiss');
+    if (!toast) return;
+
+    function getCSRF(){
+        var m = document.querySelector('meta[name="csrf-token"]');
+        return m ? m.getAttribute('content') : '';
+    }
+
+    function showToast(message, buttons){
+        if (msgEl) msgEl.textContent = message;
+        if (actionsEl) {
+            actionsEl.innerHTML = '';
+            (buttons || []).forEach(function(b){
+                var btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'btn-deal friend-social-toast-btn ' + (b.className || '');
+                btn.textContent = b.label;
+                btn.addEventListener('click', function(){
+                    if (b.onClick) b.onClick();
+                    hideToast();
+                });
+                actionsEl.appendChild(btn);
+            });
+        }
+        toast.classList.remove('hidden');
+    }
+
+    function hideToast(){
+        toast.classList.add('hidden');
+        if (actionsEl) actionsEl.innerHTML = '';
+    }
+
+    if (dismissBtn) dismissBtn.addEventListener('click', hideToast);
+
+    function postJson(url, body){
+        return fetch(url, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(Object.assign({_csrf_token: getCSRF()}, body || {}))
+        }).then(function(r){ return r.json().then(function(d){ return {ok: r.ok, data: d}; }); });
+    }
+
+    function bindSocket(sock){
+        if (!sock || sock._friendSocialBound) return;
+        sock._friendSocialBound = true;
+
+        sock.on('friend_request_received', function(data){
+            var from = (data && data.from) || {};
+            var name = from.display_name || 'A player';
+            showToast(name + ' wants to be friends', [
+                {label: 'Accept', className: 'friend-accept', onClick: function(){
+                    postJson('/api/friends/respond', {request_id: data.request_id, accept: true})
+                        .then(function(res){
+                            if (!res.ok && window.showCommentaryToast) {
+                                window.showCommentaryToast(res.data.error || 'Could not accept');
+                            } else if (window.showCommentaryToast) {
+                                window.showCommentaryToast('You are now friends with ' + name);
+                            }
+                            if (window.reloadFriendsHub) window.reloadFriendsHub();
+                            if (window.reloadLobbyFriendsList) window.reloadLobbyFriendsList();
+                        });
+                }},
+                {label: 'Decline', className: 'btn-secondary friend-decline', onClick: function(){
+                    postJson('/api/friends/respond', {request_id: data.request_id, accept: false});
+                }}
+            ]);
+        });
+
+        sock.on('friend_request_resolved', function(data){
+            var to = (data && data.to) || {};
+            var name = to.display_name || 'Player';
+            if (data.accept) {
+                if (window.showCommentaryToast) {
+                    window.showCommentaryToast(name + ' accepted your friend request ✓');
+                }
+                if (window.onFriendStatusChanged) window.onFriendStatusChanged(data);
+                if (window.reloadLobbyFriendsList) window.reloadLobbyFriendsList();
+                if (window.reloadFriendsHub) window.reloadFriendsHub();
+            } else if (window.showCommentaryToast) {
+                window.showCommentaryToast(name + ' declined your friend request');
+            }
+        });
+
+        sock.on('play_invite_received', function(data){
+            var from = (data && data.from) || {};
+            var name = from.display_name || 'A friend';
+            var pts = data.target_score || 11;
+            showToast(name + ' invited you to play (to ' + pts + ' pts)', [
+                {label: 'Join game', className: 'friend-accept', onClick: function(){
+                    postJson('/api/friends/play-invite/respond', {invite_id: data.invite_id, accept: true})
+                        .then(function(res){
+                            if (res.ok && res.data.play_url) {
+                                window.location.href = res.data.play_url;
+                            } else if (window.showCommentaryToast) {
+                                window.showCommentaryToast((res.data && res.data.error) || 'Could not join');
+                            }
+                        });
+                }},
+                {label: 'Decline', className: 'btn-secondary friend-decline', onClick: function(){
+                    postJson('/api/friends/play-invite/respond', {invite_id: data.invite_id, accept: false});
+                }}
+            ]);
+        });
+
+        sock.on('play_invite_resolved', function(data){
+            if (data.accept && data.room_id) {
+                if (window.showCommentaryToast) {
+                    window.showCommentaryToast('Friend joined — starting game…');
+                }
+                var url = '/play/' + data.room_id;
+                if (window.location.pathname.indexOf('/play/') !== 0) {
+                    window.location.href = url;
+                }
+            } else if (!data.accept && window.showCommentaryToast) {
+                var to = data.to || {};
+                window.showCommentaryToast((to.display_name || 'Friend') + ' declined your invite');
+            }
+        });
+    }
+
+    function ensureSocket(){
+        if (window.Game && window.Game.socket) {
+            bindSocket(window.Game.socket);
+            return;
+        }
+        if (window._friendSocialSocket) {
+            bindSocket(window._friendSocialSocket);
+            return;
+        }
+        if (typeof io === 'undefined') return;
+        var s = io({ transports: ['websocket', 'polling'] });
+        window._friendSocialSocket = s;
+        s.on('connect', function(){ bindSocket(s); });
+    }
+
+    function pollPendingRequests(){
+        fetch('/api/friends/requests')
+            .then(function(r){ return r.json(); })
+            .then(function(data){
+                var list = (data && data.requests) || [];
+                if (!list.length) return;
+                var req = list[0];
+                var from = req.from || {};
+                showToast((from.display_name || 'A player') + ' wants to be friends', [
+                    {label: 'Accept', className: 'friend-accept', onClick: function(){
+                        postJson('/api/friends/respond', {request_id: req.request_id, accept: true});
+                    }},
+                    {label: 'Decline', className: 'btn-secondary friend-decline', onClick: function(){
+                        postJson('/api/friends/respond', {request_id: req.request_id, accept: false});
+                    }}
+                ]);
+            })
+            .catch(function(){});
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', function(){
+            ensureSocket();
+            pollPendingRequests();
+        });
+    } else {
+        ensureSocket();
+        pollPendingRequests();
+    }
+
+    window.friendSocialEnsureSocket = ensureSocket;
+})();
+</script>

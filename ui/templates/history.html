@@ -9,8 +9,11 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@700;900&family=Inter:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Caveat:wght@400;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="{{ static_url('style.css') }}">
+    <meta name="csrf-token" content="{{ csrf_token() }}">
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js" crossorigin="anonymous" integrity="sha384-2huaZvOR9iDzHqslqwpR87isEmrfxqyWOF7hr7BY6KG0+hVKLoEXMPUJw3ynWuhO"></script>
 </head>
 <body>
+{% from 'partials/player_avatar.html' import player_avatar %}
 <!-- Loading spinner shown until page renders fully -->
 <div id="history-loading" class="history-loading">
     <div class="history-loading-spinner"></div>
@@ -41,18 +44,22 @@
 </script>
 <!-- ════════════ HUD ════════════ -->
 <header class="hud">
-    <div class="hud-brand">Chkobba</div>
+    {% include 'partials/hud_brand.html' %}
+    <div class="hud-spacer"></div>
     <nav class="hud-nav">
-        <a href="{{ url_for('index') }}"  class="hud-btn">Home</a>
-        <a href="{{ url_for('lobby') }}"  class="hud-btn">Lobby</a>
-        <a href="{{ url_for('history') }}" class="hud-btn active">History</a>
+        <a href="{{ url_for('lobby') }}" class="hud-btn">Lobby</a>
+        {% include 'partials/hud_user_menu.html' %}
     </nav>
 </header>
 
 <!-- ════════════ PAGE ════════════ -->
 <main class="history-page">
     <div class="history-header">
-        <span class="avatar-dot" style="background:{{ avatar_color }}">{{ avatar_initial }}</span>
+        {% if human_avatar_url %}
+        <img class="avatar-img avatar-hs" src="{{ human_avatar_url }}" alt="">
+        {% else %}
+        <span class="avatar-dot avatar-hs" style="background:{{ avatar_color }}">{{ avatar_initial }}</span>
+        {% endif %}
         <h1 class="history-title">{{ display_name }}'s Match History</h1>
     </div>
 
@@ -118,5 +125,9 @@
     </table>
     {% endif %}
 </main>
+{% include 'partials/name_modal.html' %}
+{% include 'partials/friends_hub_modal.html' %}
+{% include 'partials/friend_social.html' %}
+{% include 'partials/guest_persist.html' %}
 </body>
 </html>
