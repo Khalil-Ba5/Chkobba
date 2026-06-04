@@ -16,8 +16,9 @@ DB_PATH = Path(__file__).parent.parent / "chkobba_games.db"
 
 
 def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=15.0)
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 15000")
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -54,6 +55,33 @@ def init_models() -> None:
         )
     except Exception:
         pass
+    try:
+        cur.execute("ALTER TABLE guests ADD COLUMN player_number INTEGER")
+    except Exception:
+        pass
+    try:
+        cur.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_guests_player_number "
+            "ON guests(player_number) WHERE player_number IS NOT NULL"
+        )
+    except Exception:
+        pass
+    # Backfill numeric IDs for guests created before player_number existed.
+    cur.execute(
+        """
+        UPDATE guests
+        SET player_number = (
+            SELECT COUNT(*) FROM guests AS g2
+            WHERE g2.created_at <= guests.created_at
+              AND g2.rowid <= guests.rowid
+        )
+        WHERE player_number IS NULL
+        """
+    )
+
+    from models.guests import sync_all_guest_identities
+
+    sync_all_guest_identities()
 
     # ------------------------------------------------------------------
     # accounts — optional registered users.

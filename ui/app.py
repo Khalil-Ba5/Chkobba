@@ -57,7 +57,7 @@ from engine.persistence import (
 )
 
 from services.game_store import GameStore, get_game_store
-from services.names import generate_display_name, avatar_color, is_clean
+from services.names import ensure_default_display_name, avatar_color, is_clean
 from services.avatars import (
     DEFAULT_PLAYER_AVATAR_KEY,
     bot_avatar_file_exists,
@@ -169,6 +169,18 @@ GUEST_ID_COOKIE_MAX_AGE = 365 * 24 * 60 * 60
 # Render sets RENDER=true; used to disable debug toggles and unsafe defaults in production.
 IS_PRODUCTION = os.environ.get("RENDER", "").lower() == "true"
 
+
+def solo_debug_bot_starts_first() -> bool:
+    """Solo dev helper: force the bot to cut the deck and play first every round.
+
+    Off by default everywhere — the normal opener is you for round 1, then it
+    alternates each round. Set CHKOBBA_DEBUG_BOT_FIRST=1 to force bot-first
+    (used for testing the bot-opening deal/animation flow).
+    """
+    raw = os.environ.get("CHKOBBA_DEBUG_BOT_FIRST", "")
+    return raw.lower() in ("1", "true", "yes")
+
+
 # ---------------------------------------------------------------------------
 # Real-time layer (Flask-SocketIO + optional Redis message broker)
 # ---------------------------------------------------------------------------
@@ -216,7 +228,9 @@ MP_TARGET_SCORES = [11, 21, 31]   # available target scores for multiplayer room
 
 def _hydrate_guest_profile_from_db(guest_id: str) -> None:
     """Load saved display name and avatar from SQLite into the Flask session."""
-    guest = _get_guest(guest_id)
+    from models.guests import sync_guest_identity
+
+    guest = sync_guest_identity(guest_id) or _get_guest(guest_id)
     if not guest:
         return
     dn = (guest.get("display_name") or "").strip()
@@ -244,14 +258,13 @@ def _ensure_guest_session() -> None:
     if not guest_id:
         guest_id = secrets.token_hex(16)
         session["guest_id"] = guest_id
-        name = generate_display_name()
-        _ensure_guest(guest_id, display_name=name, profile_setup_done=0)
+        name = ensure_default_display_name(guest_id, profile_setup_done=0)
         session["display_name"] = name
         if is_valid_player_avatar_key(DEFAULT_PLAYER_AVATAR_KEY):
             session["avatar_key"] = DEFAULT_PLAYER_AVATAR_KEY
             _update_avatar_key(guest_id, DEFAULT_PLAYER_AVATAR_KEY)
     else:
-        _ensure_guest(guest_id, display_name=session.get("display_name", "Guest"))
+        _ensure_guest(guest_id, display_name=session.get("display_name"))
 
     _hydrate_guest_profile_from_db(guest_id)
 
@@ -571,17 +584,27 @@ def _player_avatar_options() -> list[dict]:
 
 def _apply_guest_profile(ctx: dict) -> None:
     """Merge display name + avatar fields into a template context dict."""
+    from models.guests import player_id_label, sync_guest_identity
+
     gid = session.get("guest_id", "")
-    dn = session.get("display_name", "Guest")
+    guest = sync_guest_identity(gid) if gid else None
+    if guest:
+        dn = (guest.get("display_name") or "").strip() or "Guest"
+        session["display_name"] = dn
+    else:
+        dn = session.get("display_name", "Guest")
     avatar_key = _resolve_guest_avatar_key(gid)
+    pn = int(guest["player_number"]) if guest and guest.get("player_number") is not None else None
+    pid = player_id_label(pn) if pn is not None else ""
     ctx["display_name"] = dn
     ctx["guest_id"] = gid
+    ctx["player_number"] = pn
+    ctx["player_id_label"] = pid
     ctx["avatar_initial"] = dn[0].upper() if dn else "G"
     ctx["avatar_color"] = avatar_color(gid)
     ctx["avatar_key"] = avatar_key
     ctx["human_avatar_url"] = _player_avatar_url(avatar_key)
     ctx["player_avatar_options"] = _player_avatar_options()
-    guest = _get_guest(gid) if gid else None
     ctx["needs_profile_setup"] = bool(
         guest and not int(guest.get("profile_setup_done") or 0)
     )
@@ -716,7 +739,10 @@ class GameManager:
 
         # Game mode: "solo" (human vs bot) | "1v1" (human vs human)
         self.mode: str = "solo"
-        
+        # Solo opener policy: "alternate" (you open round 1, then alternate),
+        # "human" (you always), "bot" (bot always), "random" (per round).
+        self.opening_mode: str = "alternate"
+
         # UI messaging
         self.messages: list[str] = []
         # Commentary toast to show on next page render (consumed once)
@@ -837,8 +863,9 @@ class GameManager:
         )
         if self.mode == "solo" and new_state.current_player == self.bot_id:
             self.phase = GamePhase.BOT_MOVING
-            self._queue_bot_move()
         self.save()
+        if self.mode == "solo" and self.phase == GamePhase.BOT_MOVING:
+            schedule_solo_bot_pipeline(self.room_id)
         return True
 
     def start_game(self, target_score: int, starting_seat: int = 0) -> None:
@@ -852,13 +879,38 @@ class GameManager:
         self._clear_move_state()
 
         self._setup_opening_cut(starting_seat, random.Random())
-        logger.info("Started new game with target score %d (cut phase)", target_score)
+        if self.mode == "solo" and solo_debug_bot_starts_first():
+            logger.info(
+                "Started new solo game (debug: bot opens) target=%d cutter_seat=%d",
+                target_score,
+                starting_seat,
+            )
+        else:
+            logger.info("Started new game with target score %d (cut phase)", target_score)
         self.messages = [f"New game started. Target: {target_score} points.", "Cut the deck — choose to keep the cut card or place it on the table."]
         self.last_human_move = None
         self.last_bot_move = None
         self.round_over = False
         self.final_points = None
         self.save()
+
+    def _solo_round_opener(self, round_index: int) -> int:
+        """Seat that cuts/plays first for a given round, per the opener policy.
+
+        round_index is the 0-based round number (0 = first round of the match).
+        The CHKOBBA_DEBUG_BOT_FIRST env flag still hard-overrides to bot-first.
+        """
+        if self.mode == "solo" and solo_debug_bot_starts_first():
+            return self.bot_id
+        mode = getattr(self, "opening_mode", "alternate")
+        if mode == "human":
+            return self.human_id
+        if mode == "bot":
+            return self.bot_id
+        if mode == "random":
+            return random.Random().randint(0, 1)
+        # "alternate": you open round 0, then alternate each round.
+        return self.human_id if round_index % 2 == 0 else self.bot_id
 
     def next_round(self) -> None:
         """Start a new round within the same match."""
@@ -874,8 +926,8 @@ class GameManager:
         self.last_human_played_table_index = None
         self.last_played_card = None
         self.last_played_by = None
-        # Alternate who cuts / plays first each round (seat 0, then 1, then 0, …).
-        next_opener = len(self.round_history) % 2
+        # Who cuts / plays first this round, per the opener policy.
+        next_opener = self._solo_round_opener(len(self.round_history))
         self._setup_opening_cut(next_opener, random.Random())
         self.messages.append("New round — cut the deck.")
         self.save()
@@ -936,6 +988,7 @@ class GameManager:
             "pending_bot_is_chkobba": self.pending_bot_is_chkobba,
             "round_breakdown": self.round_breakdown,
             "mode": self.mode,
+            "opening_mode": self.opening_mode,
             "human_id": self.human_id,
             "bot_id": self.bot_id,
             "bot_replacement_seat": self.bot_replacement_seat,
@@ -962,7 +1015,7 @@ class GameManager:
         created_at = existing.get("created_at", now) if existing else now
 
         # Resolve guest_id safely — save() may be called from a background task
-        # (no Flask request context), e.g. from _run_bot_turn in sockets.py.
+        # (no Flask request context), e.g. from solo_bot_pipeline in sockets.py.
         try:
             guest_id = session.get("guest_id", "unknown")
         except RuntimeError:
@@ -1070,6 +1123,7 @@ class GameManager:
         self.pending_bot_is_chkobba = data.get("pending_bot_is_chkobba", False)
         self.round_breakdown = data.get("round_breakdown", [])
         self.mode = data.get("mode", "solo")
+        self.opening_mode = data.get("opening_mode", "alternate")
         self.human_id = data.get("human_id", 0)
         self.bot_id = data.get("bot_id", 1)
         self.bot_replacement_seat = data.get("bot_replacement_seat", None)
@@ -1103,10 +1157,19 @@ class GameManager:
         return manager
 
     @classmethod
-    def create(cls, room_id: str, target_score: int, store: GameStore) -> "GameManager":
+    def create(
+        cls,
+        room_id: str,
+        target_score: int,
+        store: GameStore,
+        opening_mode: str = "alternate",
+    ) -> "GameManager":
         """Create a fresh single-player game, persist it, return the manager."""
         manager = cls(room_id=room_id, store=store)
-        manager.start_game(target_score)   # start_game() calls save() at the end
+        if opening_mode in ("alternate", "human", "bot", "random"):
+            manager.opening_mode = opening_mode
+        opener = manager._solo_round_opener(0)
+        manager.start_game(target_score, starting_seat=opener)
         return manager
 
     @classmethod
@@ -1141,7 +1204,7 @@ class GameManager:
         self.human_id = 1 - disconnected_seat
 
         # If it is currently the replaced player's turn, prime the pending bot
-        # move so _run_bot_turn() can execute it immediately.
+        # turn so solo_bot_pipeline can compute and commit in the background.
         if (
             self.state is not None
             and self.state.current_player == disconnected_seat
@@ -1149,7 +1212,6 @@ class GameManager:
             and self.phase != GamePhase.CUT_DECISION
         ):
             self.phase = GamePhase.BOT_MOVING
-            self._queue_bot_move()
 
         self._try_bot_opening_cut_solo()
 
@@ -1158,6 +1220,8 @@ class GameManager:
             disconnected_seat, self.room_id, self.human_id,
         )
         self.save()
+        if self.mode == "solo" and self.phase == GamePhase.BOT_MOVING:
+            schedule_solo_bot_pipeline(self.room_id)
 
     # ------------------------------------------------------------------
     # Legacy shim — kept so existing call-sites that check for a saved
@@ -1467,24 +1531,26 @@ class GameManager:
             return
 
         if self.mode == "solo":
-            # Solo: queue the bot move for animation.
             self.phase = GamePhase.BOT_MOVING
-            self._queue_bot_move()
         else:
-            # 1v1: both players are human — just keep PLAYING_HUMAN.
             self.phase = GamePhase.PLAYING_HUMAN
         self.save()
+        if self.mode == "solo" and self.phase == GamePhase.BOT_MOVING:
+            schedule_solo_bot_pipeline(self.room_id)
 
-    def _queue_bot_move(self) -> None:
-        """Compute bot move and store it for animation phase."""
+    def compute_bot_move(self) -> bool:
+        """Run heuristic AI and store the pending bot move (call off the request thread)."""
         if self.state is None or self.phase not in (GamePhase.BOT_MOVING, GamePhase.PLAYING_BOT):
-            logger.warning("Queue bot move called during invalid phase: %s", self.phase)
-            return
+            logger.warning("compute_bot_move called during invalid phase: %s", self.phase)
+            return False
         if self.state.current_player != self.bot_id:
-            logger.warning("Unexpected turn state: current player is %s, not bot %s", 
-                          self.state.current_player, self.bot_id)
+            logger.warning(
+                "Unexpected turn state: current player is %s, not bot %s",
+                self.state.current_player,
+                self.bot_id,
+            )
             self.messages.append("Unexpected turn state.")
-            return
+            return False
 
         move = get_heuristic_move(self.state, verbose=app.config["DEBUG_MODE"])
         self.pending_bot_move = move
@@ -1495,15 +1561,15 @@ class GameManager:
             move.is_capture and len(move.captured_cards) == len(self.state.table_cards)
         )
 
-        # Compute table indices that will be captured
         self.pending_bot_captured_indices = []
-        used = set()
+        used: set[int] = set()
         for cap_card in move.captured_cards:
             for i, t_card in enumerate(self.state.table_cards):
                 if t_card == cap_card and i not in used:
                     self.pending_bot_captured_indices.append(i)
                     used.add(i)
                     break
+        return True
 
     def commit_bot_move(self) -> None:
         """Apply the pending bot move after animation delay."""
@@ -1845,6 +1911,13 @@ class GameManager:
 
         # Pending-bot fields are only meaningful in solo mode.
         has_pending_bot        = is_solo and (self.pending_bot_move is not None)
+        bot_computing          = (
+            is_solo
+            and self.phase == GamePhase.BOT_MOVING
+            and self.pending_bot_move is None
+            and self.state is not None
+            and self.state.current_player == self.bot_id
+        )
         pending_bot_played_card    = self.pending_bot_played_card if is_solo else None
         pending_bot_captured_idxs  = self.pending_bot_captured_indices if is_solo else []
         pending_bot_is_capture     = self.pending_bot_is_capture if is_solo else False
@@ -1886,6 +1959,7 @@ class GameManager:
             "match_winner": self.match_winner,
             "show_next_round": self.phase == GamePhase.ROUND_OVER,
             "has_pending_bot": has_pending_bot,
+            "bot_computing": bot_computing,
             "opp_first_js_deal": opp_first_js_deal,
             "last_human_played_table_index": self.last_human_played_table_index,
             "pending_bot_captured_indices": pending_bot_captured_idxs,
@@ -1957,6 +2031,15 @@ class GameManager:
             "game_active": True,
             "round_end_sweep": round_end_sweep_view,
         }
+
+
+def schedule_solo_bot_pipeline(room_id: str) -> None:
+    """Run bot AI in a Socket.IO background task (non-blocking for HTTP and socket)."""
+    if not room_id or room_id == "__no_room__":
+        return
+    from ui.sockets import solo_bot_pipeline
+
+    socketio.start_background_task(solo_bot_pipeline, room_id, app.game_store)
 
 
 # ---------------------------------------------------------------------------
@@ -2066,8 +2149,11 @@ def start():
     if target_score not in TARGET_SCORES:
         flash("Invalid target score.")
         return redirect(url_for("index"))
+    opening_mode = request.form.get("opening_mode", "alternate")
+    if opening_mode not in ("alternate", "human", "bot", "random"):
+        opening_mode = "alternate"
     room_id = _get_solo_room_id()          # creates/reuses session entry
-    GameManager.create(room_id, target_score, app.game_store)
+    GameManager.create(room_id, target_score, app.game_store, opening_mode=opening_mode)
     return redirect(url_for("index"))
 
 
@@ -2095,7 +2181,7 @@ def commit_bot():
 @app.route("/api/play", methods=["POST"])
 @csrf_protect
 def api_play():
-    """Process a human move and return the new game state as JSON."""
+    """Process a human move and return JSON immediately (bot AI runs in background)."""
     manager = _get_manager()
     hand_index_str  = request.form.get("hand_index", "")
     table_indices_str = request.form.get("table_indices", "")
@@ -2116,12 +2202,53 @@ def api_play():
     return jsonify(manager.view_data())
 
 
+@app.route("/api/bot_status")
+def api_bot_status():
+    """Lightweight poll while the bot move is computed in a background task."""
+    manager = _get_manager()
+    vd = manager.view_data()
+    return jsonify({
+        "has_pending_bot": vd.get("has_pending_bot"),
+        "bot_computing": vd.get("bot_computing"),
+        "pending_bot_played_card": vd.get("pending_bot_played_card"),
+        "pending_bot_is_capture": vd.get("pending_bot_is_capture"),
+        "pending_bot_is_chkobba": vd.get("pending_bot_is_chkobba"),
+        "pending_bot_captured_indices": vd.get("pending_bot_captured_indices"),
+        "human_is_current": vd.get("human_is_current"),
+    })
+
+
 @app.route("/api/bot_move", methods=["POST"])
 @csrf_protect
 def api_bot_move():
-    """Commit the pending bot move and return the new game state as JSON."""
+    """Commit the pending bot move (HTTP path). Never runs heuristic AI here."""
     manager = _get_manager()
-    manager.commit_bot_move()
+    room_id = manager.room_id
+    if not room_id or room_id == "__no_room__":
+        return jsonify(manager.view_data())
+
+    store = app.game_store
+    store.acquire_room(room_id)
+    try:
+        manager = GameManager.load(room_id, store)
+    except RoomNotFoundError:
+        return jsonify({"error": "Room not found"}), 404
+    finally:
+        store.release_room(room_id)
+
+    if manager.pending_bot_move is None:
+        # Pipeline may have already committed (socket path) or still computing.
+        return jsonify(manager.view_data())
+
+    store.acquire_room(room_id)
+    try:
+        manager = GameManager.load(room_id, store)
+        if manager.pending_bot_move is not None:
+            manager.commit_bot_move()
+    except RoomNotFoundError:
+        return jsonify({"error": "Room not found"}), 404
+    finally:
+        store.release_room(room_id)
     return jsonify(manager.view_data())
 
 
@@ -2187,10 +2314,16 @@ def api_update_name():
     mark_profile_setup_done(guest_id)
     _sync_guest_profile_to_rooms(guest_id, name, avatar_key)
     logger.info("Guest %.8s changed name to %r avatar=%r", guest_id, name, avatar_key)
+    from models.guests import player_id_label
+
+    guest_row = _get_guest(guest_id)
+    pn = int(guest_row["player_number"]) if guest_row and guest_row.get("player_number") is not None else None
     return jsonify({
         "ok": True,
         "guest_id": guest_id,
         "name": name,
+        "player_number": pn,
+        "player_id_label": player_id_label(pn) if pn is not None else "",
         "avatar_key": avatar_key,
         "avatar_url": _player_avatar_url(avatar_key),
         "avatar_initial": name[0].upper() if name else "G",

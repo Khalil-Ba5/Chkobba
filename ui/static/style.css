@@ -28,6 +28,10 @@ html { height: 100%; }
     --orange:     #e8883a;
     --blue:       #5bc8f5;
     --trans:      .15s ease;
+    /* Card dimensions — single source of truth so face-up, face-down, piles
+       and the bot's flipping/played cards all stay in sync (no size "pop"). */
+    --card-w:      76px; --card-h:      108px;
+    --card-back-w: 52px; --card-back-h: 74px;
     /* Wood table photo — Unsplash (Zoshua Colah), Unsplash License */
     --wood-texture: url('https://images.unsplash.com/photo-1763392199096-6efd9d28d8cc?auto=format&fit=crop&w=1920&q=75');
 }
@@ -812,8 +816,8 @@ html.chk-opp-first-boot #bot-cards {
 }
 /* pile-cards inside .cap-pile are card-back size — override the tiny pile-card rule */
 .cap-pile .pile-card {
-    width: 52px !important;
-    height: 74px !important;
+    width: var(--card-back-w) !important;
+    height: var(--card-back-h) !important;
     position: absolute;
     top: 0; left: 0;
 }
@@ -861,8 +865,8 @@ html.chk-opp-first-boot #bot-cards {
 }
 /* Invisible placeholder that keeps column width when a card is captured */
 .card-spacer {
-    width: 76px;
-    height: 108px;
+    width: var(--card-w);
+    height: var(--card-h);
     flex-shrink: 0;
     visibility: hidden;
     pointer-events: none;
@@ -877,7 +881,7 @@ html.chk-opp-first-boot #bot-cards {
    CARDS
 ════════════════════════════════════════ */
 .card {
-    width: 76px; height: 108px;
+    width: var(--card-w); height: var(--card-h);
     border-radius: 10px;
     background: var(--card-bg);
     border: 1px solid #cfc4b0;
@@ -984,7 +988,7 @@ html.chk-opp-first-boot #bot-cards {
    The SVG carries its own border, rounded corners and colour — we only keep the
    shadow and dimensions here so ALL card-back instances stay in sync. */
 .card-back {
-    width: 52px; height: 74px;
+    width: var(--card-back-w); height: var(--card-back-h);
     border-radius: 8px;
     background: url('/static/oc-card-back.svg') center / cover no-repeat;
     border: none;
@@ -993,37 +997,55 @@ html.chk-opp-first-boot #bot-cards {
 }
 .card-back::after { content: none; }
 
-/* Bot pending card */
+/* Bot pending card — the card the bot has committed to play.
+   While face-DOWN it matches the rest of the hidden hand (card-back size) so the
+   bot's hand stays uniform. It grows to the full table footprint only once it is
+   revealed (and then flies to the table/pile). The reveal flip animates the grow
+   so there is no abrupt size "pop". */
 .bot-capture-card {
     animation: botAppear .3s ease-out;
     box-shadow: 0 0 18px rgba(249,115,22,.3);
+}
+.bot-capture-card:not(.card-back) {
+    width: var(--card-w); height: var(--card-h);
 }
 @keyframes botAppear {
     from { opacity:0; transform:scale(.7); }
     to   { opacity:1; transform:scale(1); }
 }
 
-/* Opponent reveal: card flips in hand before moving to table. */
+/* Opponent reveal: a real two-faced 3D flip in the bot's hand before the card
+   moves to the table. The outer element positions/centres; the inner element
+   rotates, carrying a back face (card back) and a front face (the card). */
 .opp-reveal-card {
     position: absolute;
-    transform: translate(-50%, -50%) perspective(800px) rotateY(180deg) scale(.96);
-    transform-style: preserve-3d;
-    backface-visibility: hidden;
-    opacity: .95;
+    width: var(--card-w); height: var(--card-h);
+    transform: translate(-50%, -50%);
+    perspective: 900px;
     z-index: 25;
-    box-shadow: 0 8px 18px rgba(0,0,0,.42);
     pointer-events: none;
 }
-.opp-reveal-card.phase-back {
-    transition: transform .14s ease-out, opacity .14s ease-out;
-    transform: translate(-50%, -50%) perspective(800px) rotateY(95deg) scale(.98);
-    opacity: 1;
+.opp-reveal-inner {
+    position: relative;
+    width: 100%; height: 100%;
+    transform-style: preserve-3d;
+    /* --start-scale lets the card begin at the small hand-card size and grow to
+       full table size as it flips (set from JS to handW / tableW). */
+    transform: rotateY(0deg) scale(var(--start-scale, 1));
+    transition: transform var(--flip-ms, .3s) cubic-bezier(.45,.05,.25,1);
 }
-.opp-reveal-card.phase-face {
-    transition: transform .2s cubic-bezier(.22,1,.36,1), opacity .2s ease;
-    transform: translate(-50%, -50%) perspective(800px) rotateY(0deg) scale(1.03);
-    opacity: 1;
+.opp-reveal-card.flipping .opp-reveal-inner { transform: rotateY(180deg) scale(1); }
+.opp-reveal-face {
+    position: absolute; inset: 0;
+    width: 100%; height: 100%;
+    backface-visibility: hidden;
+    border-radius: 10px;
+    margin: 0;
 }
+/* Front face shows the card back (visible at rotateY 0). */
+.opp-reveal-face.opp-reveal-front { border-radius: 8px; }
+/* Back face holds the card front, pre-rotated so it faces the viewer at 180deg. */
+.opp-reveal-face.opp-reveal-back { transform: rotateY(180deg); }
 
 /* Graceful fallback fade-in when FLIP data is absent (e.g. first load, captures).
    The FLIP script suppresses this with animation:none when it runs instead. */
@@ -1643,6 +1665,38 @@ html.chk-opp-first-boot #bot-cards {
     line-height: 1.4;
     max-width: 18rem;
 }
+.name-modal-id-row {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: .2rem;
+    width: 100%;
+    padding: .5rem .75rem;
+    border-radius: 10px;
+    background: rgba(212, 175, 55, .08);
+    border: 1px solid rgba(212, 175, 55, .22);
+    box-sizing: border-box;
+}
+.name-modal-id-label {
+    font-size: .72rem;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--muted);
+}
+.name-modal-id-value {
+    font-family: 'Cinzel', serif;
+    font-size: 1.15rem;
+    color: var(--gold-light);
+    letter-spacing: .06em;
+}
+.name-modal-field-label {
+    align-self: flex-start;
+    font-size: .72rem;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: -.35rem;
+}
 .name-modal-welcome { z-index: 650; }
 .name-modal-avatar {
     width: 52px; height: 52px; border-radius: 50%;
@@ -1919,12 +1973,10 @@ html.chk-opp-first-boot #bot-cards {
 
     .board { padding: .35rem .5rem; gap: .4rem; }
 
-    .card { width: 64px; height: 92px; }
+    :root { --card-w: 64px; --card-h: 92px; --card-back-w: 46px; --card-back-h: 66px; }
     .c-tl, .c-br { font-size: .75rem; }
     .c-ctr { font-size: 2.2rem; }
-    .card-back { width: 46px; height: 66px; }
-    .card-spacer { width: 64px; height: 92px; }
-    .table-col { min-width: 64px; }
+    .table-col { min-width: var(--card-w); }
 
     .felt { border-radius: 22px; }
     .felt::after { border-radius: 18px; }
@@ -1943,16 +1995,14 @@ html.chk-opp-first-boot #bot-cards {
     .deck-stack { width: 44px; height: 48px; }
     .pile-card  { width: 24px !important; height: 34px !important; }
     .cap-pile   { width: 56px; height: 70px; }
-    .cap-pile .pile-card { width: 46px !important; height: 66px !important; }
+    .cap-pile .pile-card { width: var(--card-back-w) !important; height: var(--card-back-h) !important; }
 }
 
 @media (max-width: 380px) {
-    .card { width: 56px; height: 80px; }
+    :root { --card-w: 56px; --card-h: 80px; --card-back-w: 40px; --card-back-h: 58px; }
     .c-tl, .c-br { font-size: .68rem; }
     .c-ctr { font-size: 1.9rem; }
-    .card-back { width: 40px; height: 58px; }
-    .card-spacer { width: 56px; height: 80px; }
-    .table-col { min-width: 56px; }
+    .table-col { min-width: var(--card-w); }
     .felt-cards { gap: 8px; }
 }
 
@@ -1963,6 +2013,8 @@ html.chk-opp-first-boot #bot-cards {
         transition-duration: .01ms !important;
     }
     .table-card { transform: none !important; }
+    /* Skip the 3D flip — snap straight to the face. */
+    .opp-reveal-inner { transition-duration: .01ms !important; }
     #commentary-toast { transition: opacity .3s ease, transform .3s ease; }
     .overlay.active { animation: none; }
     .modal { animation: none; }

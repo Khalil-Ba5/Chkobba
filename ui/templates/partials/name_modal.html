@@ -3,7 +3,13 @@
     <div class="name-modal-box" role="document">
         <h2 class="name-modal-title" id="name-modal-title">{% if needs_profile_setup|default(false) %}Welcome to Chkobba{% else %}Your profile{% endif %}</h2>
         {% if needs_profile_setup|default(false) %}
-        <p class="name-modal-lead" id="name-modal-lead">Choose a display name and avatar before you play.</p>
+        <p class="name-modal-lead" id="name-modal-lead">Your player ID is permanent. Pick a display name and avatar to continue.</p>
+        {% endif %}
+        {% if player_id_label %}
+        <div class="name-modal-id-row">
+            <span class="name-modal-id-label">Player ID</span>
+            <span class="name-modal-id-value" id="name-modal-player-id">{{ player_id_label }}</span>
+        </div>
         {% endif %}
         {% if player_avatar_options %}
         <div class="avatar-picker" id="avatar-picker" role="radiogroup" aria-label="Choose avatar">
@@ -18,8 +24,10 @@
         <div id="name-modal-avatar-preview" class="name-modal-avatar-preview human-avatar-slot">
             {{ player_avatar(avatar_initial, avatar_color, human_avatar_url|default(none), false, 'name-modal-avatar-img') }}
         </div>
+        <label class="name-modal-field-label" for="name-modal-input">Display name</label>
         <input id="name-modal-input" class="name-modal-input" type="text" maxlength="30"
-               placeholder="Enter a name…" autocomplete="off" spellcheck="false"
+               placeholder="{% if player_id_label %}{{ player_id_label }}{% else %}Enter a name…{% endif %}"
+               autocomplete="off" spellcheck="false"
                value="{{ display_name }}" aria-label="Display name">
         <p id="name-modal-error" class="name-modal-error" hidden></p>
         <div class="name-modal-actions">
@@ -94,13 +102,19 @@
         return m ? m.getAttribute('content') : '';
     }
 
+    var serverDisplayName = {{ display_name|tojson }};
+
     function open(){
         errEl.hidden = true;
-        var seed = (document.getElementById('zone-display-name') ||
-                    document.querySelector('.hud-user-name') ||
-                    document.querySelector('.hs-name-text') ||
-                    {textContent:''}).textContent.trim();
-        if (seed) input.value = seed;
+        if (isWelcome) {
+            input.value = serverDisplayName || input.value || '';
+        } else {
+            var seed = (document.getElementById('zone-display-name') ||
+                        document.querySelector('.hud-user-name') ||
+                        document.querySelector('.hs-name-text') ||
+                        {textContent:''}).textContent.trim();
+            if (seed) input.value = seed;
+        }
         modal.hidden = false;
         syncPickerSelection();
         previewFromSelection(input.value.trim());

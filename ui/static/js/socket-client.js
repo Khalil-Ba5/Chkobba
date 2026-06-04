@@ -86,8 +86,11 @@
         eng.setState(data);
         self.lastSeq = data.seq || 0;
 
-        // During deal / bot capture animation the init path owns card-zone DOM.
-        if ((eng.isDealing && eng.isDealing()) || (eng.isBotAnimating && eng.isBotAnimating())) {
+        // During deal / bot flip / capture fly the animation pipeline owns card-zone DOM.
+        if (eng.shouldDeferSnapshotDom ? eng.shouldDeferSnapshotDom() :
+            ((eng.isDealing && eng.isDealing()) ||
+             (eng.isBotAnimating && eng.isBotAnimating()) ||
+             (eng.isBotRevealPipelineActive && eng.isBotRevealPipelineActive()))) {
           eng.applyState(data, null, prevState);
           return;
         }
@@ -95,11 +98,13 @@
         var pred = eng._lastPredicted;
         if (pred) {
           eng._lastPredicted = null;
-          // Prediction was applied optimistically; check if it matches server.
           if (eng.statesMatch && eng.statesMatch(pred, data)) {
             if (data.commentary_toast && window.showCommentaryToast)
               window.showCommentaryToast(data.commentary_toast);
-            // Human play confirmed — update bot-pending UI only (avoid full table rebuild).
+            if (data.bot_computing && !data.has_pending_bot) {
+              if (eng.applyState) eng.applyState(data, null, prevState);
+              return;
+            }
             if (data.has_pending_bot) {
               if (eng.onServerConfirm) {
                 eng.onServerConfirm(data);
@@ -112,10 +117,8 @@
               eng.applyState(data, null, prevState);
             }
             return;
-          } else {
-            // Mismatch — let reconcile() do a brief fade and re-render.
-            if (eng.reconcile) { eng.reconcile(data); return; }
           }
+          if (eng.reconcile) { eng.reconcile(data); return; }
         }
 
         // No prediction pending — apply state directly, passing the previous

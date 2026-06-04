@@ -732,8 +732,15 @@
 'use strict';
 
 var EASE='cubic-bezier(0.22,1,0.36,1)';
-var DEAL_ANIM_MULT=3.0;
+// ── Single tempo knob ───────────────────────────────────────────────────────
+// All card motion (deal, bot flip, capture sweep) is derived from one speed
+// factor so the table keeps a consistent rhythm. Higher = snappier overall.
+// The deal used to run ~3x faster than the bot's turn, which read as two
+// different speeds; tempos are now within ~1.5x of each other.
+var ANIM_SPEED=1.0;
+var DEAL_ANIM_MULT=1.7/ANIM_SPEED;
 function dealMs(x){ return Math.max(32, Math.round(x/DEAL_ANIM_MULT)); }
+function animMs(x){ return Math.max(16, Math.round(x/ANIM_SPEED)); }
 var CSRF=(document.querySelector('meta[name="csrf-token"]')||{}).getAttribute('content')||'';
 function oppPlayingMsg(n){ return (n||'Opponent')+' is playing…'; }
 function oppThinkMsg(n){ return (n||'Opponent')+' is thinking…'; }
@@ -820,14 +827,135 @@ function _syncGameDom(st,human,snap){
 }
 var _lastSeenCutCard=null;
 var _pendingBotSnap=null;
+// Card string last given the cardAppear animation — prevents re-animating the
+// same just-played table card on every subsequent table re-render.
+var _lastAppearedCard=null;
+var _deferredSocketCapture=null;
+var _botCaptureFlyDone=false;
+var _botCaptureFlyStarted=false;
+// True from the moment a bot capture is known until the fly finishes — keeps the
+// table DOM frozen so captured cards stay put and visibly fly to the pile.
+var _botCaptureFlyPending=false;
+// Safety net: auto-release the freeze if a capture/chkobba fly never completes,
+// so the game can never stay blocked with the bot stuck "thinking".
+var _botCaptureFlyWatchdog=null;
+function _armBotCaptureFlyPending(){
+    _botCaptureFlyPending=true;
+    if(_botCaptureFlyWatchdog) clearTimeout(_botCaptureFlyWatchdog);
+    _botCaptureFlyWatchdog=setTimeout(_botCaptureFlyWatchdogCheck,2200);
+}
+function _botCaptureFlyWatchdogCheck(){
+    _botCaptureFlyWatchdog=null;
+    if(!_botCaptureFlyPending) return;
+    if(_botCaptureFlyStarted||_botCaptureFlyDone){
+        _botCaptureFlyWatchdog=setTimeout(function(){
+            _botCaptureFlyWatchdog=null;
+            if(_botCaptureFlyPending) _finishBotCaptureSync(true);
+        },4000);
+        return;
+    }
+    if(window.console) console.warn('[capture] reveal/fly never started — recovering freeze', {
+        botAnimating:_botAnimating, isDealing:_isDealing, oppRevealInFlight:_oppRevealInFlight(),
+        revealActive:_botRevealPipelineActive, botCaptureTimer:_botCaptureTimer,
+        has_pending:!!(_state&&_state.has_pending_bot),
+        pendingPlayStash:!!_pendingPlayStash, intentStash:!!_botCaptureIntentStash,
+        tableStashIsCap:!!(_botCaptureTableStash&&_botCaptureTableStash.pending_bot_is_capture),
+        deferredSocketCapture:!!_deferredSocketCapture,
+        bc:(function(){var b=document.querySelector('.bot-capture-card');return b?{vis:b.style.visibility,rev:b.dataset.revealed}:'(missing)';})()
+    });
+    _finishBotCaptureSync(true);
+}
+var _botCaptureTableStash=null;
+var _pendingPlayStash=null;
+var _botCaptureIntentStash=null;
+var _botRevealPipelineActive=false;
+
+var _botRevealToken=0;
+
+function _resetBotRevealPipeline(){
+    _botRevealToken++;
+    _clearOppRevealOverlay();
+    _botRevealPipelineActive=false;
+    _botCaptureFlyDone=false;
+    _botCaptureFlyStarted=false;
+}
+
+// Drop leftover bot pending/capture animation state at deal boundaries so a stale
+// pending card never lingers into a fresh hand (extra "4th card" in the bot's hand).
+function _clearStaleBotPending(){
+    _pendingPlayStash = null;
+    _botCaptureIntentStash = null;
+    _botCaptureTableStash = null;
+    _deferredSocketCapture = null;
+    _botCaptureFlyPending = false;
+    _botCaptureFlyStarted = false;
+    _botCaptureFlyDone = false;
+    if(_botCaptureFlyWatchdog){ clearTimeout(_botCaptureFlyWatchdog); _botCaptureFlyWatchdog = null; }
+    var _staleBc = document.querySelector('.bot-capture-card');
+    if(_staleBc && _staleBc.parentNode) _staleBc.parentNode.removeChild(_staleBc);
+    _clearOppRevealOverlay();
+}
+
+function _oppRevealInFlight(){
+    return !!document.querySelector('.opp-zone .opp-reveal-card');
+}
+
+function _clearOppRevealOverlay(){
+    document.querySelectorAll('.opp-zone .opp-reveal-card').forEach(function(el){
+        if(el.parentNode) el.parentNode.removeChild(el);
+    });
+}
+
+function _deferSnapshotDom(){
+    if(_isDealing||_botAnimating) return true;
+    if(_oppRevealInFlight()) return true;
+    if(_botCaptureFlyStarted) return true;
+    if(_botCaptureFlyPending&&!_botCaptureFlyDone) return true;
+    if(_state&&_state.has_pending_bot) return true;
+    if(_botRevealPipelineActive&&_botCaptureIntentStash&&!_botCaptureFlyDone) return true;
+    return false;
+}
+
+function _tryResumeBotRevealFromHud(st){
+    if(_isDealing||_botAnimating||_oppRevealInFlight()) return;
+    var live=_playStateForBotAnim(st);
+    if(!live) return;
+    var playCard=live.pending_bot_played_card||
+        (_pendingPlayStash&&_pendingPlayStash.pending_bot_played_card)||
+        (_botCaptureIntentStash&&_botCaptureIntentStash.pending_bot_played_card);
+    if(!playCard) return;
+    // Deferred snapshots only update the HUD, so the bot's pending-card element may
+    // not exist yet. Create it here (instead of bailing) so the reveal → fly
+    // pipeline can start — otherwise a pending capture arms the table freeze with
+    // nothing to release it, blocking the game until the watchdog fires.
+    var bc=document.querySelector('.bot-capture-card')||_ensureBotPendingCardDom(live);
+    if(!bc) return;
+    // Do NOT bail when the card is already revealed: resumeBotPendingAfterZoneAnim
+    // handles that case by driving afterBotPendingRevealed (which schedules the
+    // capture fly). Bailing here orphans a queued capture and stalls the freeze.
+    resumeBotPendingAfterZoneAnim(st);
+}
+
+var _activeHandDealKey=null;
 
 function _useSocket(){
     return !!(window.Game && window.Game.socket && window.Game.socket.connected);
 }
 
-var CAPTURE_FLY_BASE_MS = 600;
-var CAPTURE_FLY_PER_EXTRA_MS = 90;
-var CAPTURE_SYNC_PAD_MS = 80;
+// Capture sweep — derived from the shared tempo (animMs) so it stays in step
+// with the deal/flip. Base lowered from 680→560 to narrow the deal-vs-capture
+// gap that made the two read as different speeds.
+var CAPTURE_FLY_BASE_MS = animMs(560);
+var CAPTURE_FLY_PER_EXTRA_MS = animMs(90);
+var CAPTURE_FLY_MIN_MS = animMs(480);
+var CAPTURE_SYNC_PAD_MS = 80;            // sync buffer, not motion — left fixed
+var OPP_CAPTURE_REVEAL_MS = animMs(320);
+// Bot reveal flip: BOT_REVEAL_FLIP_MS must match the CSS --flip-ms transition.
+var BOT_REVEAL_FLIP_MS = animMs(300);
+var BOT_REVEAL_SETTLE_MS = 40;           // tiny buffer before the card settles
+var BOT_REVEAL_WATCHDOG_MS = animMs(160);// extra safety after flip completes
+var BOT_POST_REVEAL_CAPTURE_MS = animMs(360);
+var BOT_CHKOBBA_PRE_ANIM_MS = animMs(440);
 
 // Mirrors _place_card_in_slots() in app.py — column fill priority [3,1,2,1,3].
 var TABLE_COLUMN_PRIORITIES = [3, 1, 2, 1, 3];
@@ -921,18 +1049,22 @@ function reconcile(serverState){
 
 function onServerConfirm(serverState){
     if(_isDealing || _botAnimating){ _state = serverState; return; }
+    if(_botRevealPipelineActive && document.querySelector('.opp-zone .opp-reveal-card')){ _state = serverState; return; }
     if(serverState.commentary_toast&&window.showCommentaryToast)
         window.showCommentaryToast(serverState.commentary_toast);
     if(!serverState.has_pending_bot) return;
     _state=serverState;
-    _syncGameDom(serverState,false,null);
+    _stashPendingPlayFromState(serverState);
+    if(serverState.pending_bot_is_capture){ _stashBotCaptureTable(serverState); _armBotCaptureFlyPending(); }
     var hint=document.getElementById('selection-hint');
     if(hint) hint.textContent=oppPlayingMsg(serverState.bot_name);
     var bSt=document.querySelector('.opp-zone .zone-status');
     if(bSt) bSt.innerHTML='<span class="badge thinking">Playing…</span>';
-    var _snapBc=document.querySelector('.bot-capture-card');
-    if(_snapBc) _pendingBotSnap=takeSnap(_snapBc,true);
-    if(serverState.pending_bot_is_capture && !_useSocket()) animateBotCapture(serverState);
+    _botRevealPipelineActive=true;
+    _ensureBotPendingCardDom(serverState);
+    revealBotPendingCard(serverState.pending_bot_played_card,function(){
+        afterBotPendingRevealed(_playStateForBotAnim(serverState));
+    });
 }
 
 function _applyHudOnly(st, human, oppName){
@@ -1025,8 +1157,8 @@ function getDeckFlyOrigin(){
 function pileFlyDurationMs(base, n){
     base = base || CAPTURE_FLY_BASE_MS;
     n = n || 0;
-    if(n <= 1) return base;
-    return Math.max(base, base + 120 + (n - 1) * CAPTURE_FLY_PER_EXTRA_MS);
+    if(n <= 1) return Math.max(base, CAPTURE_FLY_MIN_MS);
+    return Math.max(base, base + 160 + (n - 1) * CAPTURE_FLY_PER_EXTRA_MS, CAPTURE_FLY_MIN_MS);
 }
 function rectObj(r){return{left:r.left,top:r.top,width:r.width,height:r.height};}
 
@@ -1131,9 +1263,246 @@ function buildBotHand(count,hasPending,pendingCard){
     if(hasPending&&pendingCard) hiddenCount = Math.max(0, count - 1);
     for(var i=0;i<hiddenCount;i++) h+='<div class="card card-back"></div>';
     if(hasPending&&pendingCard)
-        h+='<div class="card bot-capture-card'+(isRed(pendingCard)?' red-suit':'')+'">'+pendingCard+'</div>';
+        h+='<div class="card bot-capture-card card-back" data-pending-card="'+pendingCard+'" data-revealed="0"></div>';
     if(!hiddenCount&&!hasPending) h+='<span class="zone-empty">No cards</span>';
     return h;
+}
+
+function revealBotPendingCard(cardStr, onDone){
+    var bc=document.querySelector('.bot-capture-card');
+    var pending=cardStr||(bc&&bc.getAttribute('data-pending-card'));
+    if(!bc||!pending){
+        _botRevealPipelineActive=false;
+        if(onDone) onDone();
+        return;
+    }
+    if(!_botPendingNeedsReveal(bc)){ if(onDone) onDone(); return; }
+    _botRevealToken++;
+    var myToken=_botRevealToken;
+    var finished=false;
+    function finishReveal(){
+        if(finished||myToken!==_botRevealToken) return;
+        finished=true;
+        _clearOppRevealOverlay();
+        bc.classList.remove('card-back');
+        bc.textContent=pending;
+        if(isRed(pending)) bc.classList.add('red-suit');
+        else bc.classList.remove('red-suit');
+        enhance(bc);
+        bc.style.visibility='visible';
+        bc.dataset.revealed='1';
+        _pendingBotSnap=takeSnap(bc,true);
+        if(onDone) onDone();
+    }
+    delete bc.dataset.revealed;
+    document.documentElement.classList.remove('chk-opp-first-boot');
+    var zone=document.querySelector('.opp-zone');
+    if(!zone){
+        bc.classList.remove('card-back');
+        bc.textContent=pending;
+        if(isRed(pending)) bc.classList.add('red-suit');
+        enhance(bc);
+        bc.style.visibility='visible';
+        bc.dataset.revealed='1';
+        if(onDone) onDone();
+        return;
+    }
+    _clearOppRevealOverlay();
+    bc.style.visibility='';
+    var ar=bc.getBoundingClientRect();
+    if(ar.width<2||ar.height<2){
+        bc.style.visibility='visible';
+        ar=bc.getBoundingClientRect();
+    }
+    bc.style.visibility='hidden';
+    var zr=zone.getBoundingClientRect();
+
+    // Two-faced 3D flip: an inner element rotates rotateY 0deg→180deg.
+    // The front face is the card back; the back face (pre-rotated) is the
+    // card front, so you actually see the card turn over.
+    var reveal=document.createElement('div');
+    reveal.className='opp-reveal-card';
+    reveal.style.left=(ar.left-zr.left+ar.width/2)+'px';
+    reveal.style.top=(ar.top-zr.top+ar.height/2)+'px';
+    reveal.style.setProperty('--flip-ms', BOT_REVEAL_FLIP_MS+'ms');
+
+    var inner=document.createElement('div');
+    inner.className='opp-reveal-inner';
+
+    var front=document.createElement('div');
+    front.className='card-back opp-reveal-face opp-reveal-front';
+
+    var back=document.createElement('div');
+    back.className='card opp-reveal-face opp-reveal-back'+(isRed(pending)?' red-suit':'');
+    back.textContent=pending;
+    enhance(back);
+
+    inner.appendChild(front);
+    inner.appendChild(back);
+    reveal.appendChild(inner);
+    zone.appendChild(reveal);
+
+    // Begin the flip at the small hand-card size (ar) and grow to full table
+    // size (reveal.offsetWidth) as it turns over — a smooth "card is played" grow.
+    var fullW=reveal.offsetWidth||ar.width;
+    var startScale=(fullW>0&&ar.width>0)?Math.min(1, ar.width/fullW):1;
+    inner.style.setProperty('--start-scale', startScale.toFixed(3));
+
+    requestAnimationFrame(function(){
+        if(myToken!==_botRevealToken) return;
+        if(window.playCardPlaySound) window.playCardPlaySound();
+        reveal.classList.add('flipping');
+    });
+    setTimeout(finishReveal,BOT_REVEAL_FLIP_MS+BOT_REVEAL_SETTLE_MS);
+    setTimeout(function(){
+        if(finished||myToken!==_botRevealToken) return;
+        finishReveal();
+    },BOT_REVEAL_FLIP_MS+BOT_REVEAL_SETTLE_MS+BOT_REVEAL_WATCHDOG_MS);
+}
+
+function captureEventFromState(st){
+    var mySeat=(st&&st.my_seat!=null)?st.my_seat:0;
+    var capStrs=[];
+    (st.pending_bot_captured_indices||[]).forEach(function(ci){
+        var slots=st.table_slots||[];
+        for(var j=0;j<slots.length;j++){
+            if(slots[j].table_index===ci&&slots[j].card){
+                capStrs.push(slots[j].card);
+                break;
+            }
+        }
+    });
+    return {
+        seat:1-mySeat,
+        played_card:st.pending_bot_played_card,
+        captured:capStrs,
+        is_chkobba:!!st.pending_bot_is_chkobba
+    };
+}
+
+function flushDeferredSocketCapture(){
+    if(_deferredSocketCapture){
+        var d=_deferredSocketCapture;
+        _deferredSocketCapture=null;
+        runSocketCaptureFly(d);
+    }
+}
+
+function _handDealKey(st){
+    if(!st) return '';
+    return (st.round_moves_played||0)+'|'+(st.deck_remaining||0)+
+        '|h'+(st.human_hand?st.human_hand.length:0)+
+        '|b'+(st.bot_hand_count||0);
+}
+
+function _stashBotCaptureTable(st){
+    if(!st) return;
+    var base=_botCaptureTableStash||{};
+    _botCaptureTableStash={
+        table_slots:(st.table_slots||[]).map(function(s){
+            return {card:s&&s.card,table_index:s&&s.table_index};
+        }),
+        pending_bot_captured_indices:(st.pending_bot_captured_indices||[]).slice(),
+        pending_bot_played_card:st.pending_bot_played_card||base.pending_bot_played_card,
+        pending_bot_is_capture:!!(st.pending_bot_is_capture||base.pending_bot_is_capture),
+        pending_bot_is_chkobba:!!(st.pending_bot_is_chkobba||base.pending_bot_is_chkobba),
+        last_played_card:st.last_played_card,
+        last_played_by:st.last_played_by,
+        my_seat:st.my_seat!=null?st.my_seat:base.my_seat
+    };
+}
+
+function _beginBotCaptureVisual(st){
+    if(st&&(st.pending_bot_is_capture||st.pending_bot_played_card)) _stashBotCaptureTable(st);
+    _botAnimating=true;
+}
+
+function _abortBotCaptureVisual(sync){
+    _deferredSocketCapture=null;
+    _botCaptureFlyStarted=false;
+    if(sync) _finishBotCaptureSync(true);
+    else {
+        _botAnimating=false;
+        _botCaptureTimer=null;
+    }
+}
+
+function scheduleBotCaptureAfterReveal(st, retry){
+    if(!_useSocket()) return;
+    st=_playStateForBotAnim(st)||_state||_botCaptureTableStash;
+    if(!st) return;
+    retry=retry||0;
+    var delay=retry>0?80:(st.pending_bot_is_chkobba?BOT_CHKOBBA_PRE_ANIM_MS:botPostRevealCaptureMs(st));
+    setTimeout(function(){
+        if(_botCaptureFlyDone || _botCaptureFlyStarted){
+            if(_state&&!_state.has_pending_bot) _finishBotCaptureSync(true);
+            return;
+        }
+        if(_isDealing) return;
+        var live=_playStateForBotAnim(st);
+        if(live&&!live.has_pending_bot&&!_pendingPlayStash&&!_botCaptureIntentStash){
+            _finishBotCaptureSync(true);
+            return;
+        }
+        var capturing=_botPlayShowsCapture(live);
+        if(!capturing){
+            var bc=document.querySelector('.bot-capture-card');
+            if(bc&&bc.dataset.revealed==='1'&&!_pendingBotSnap)
+                _pendingBotSnap=takeSnap(bc,true);
+            if(_state&&!_state.has_pending_bot){
+                _finishBotCaptureSync(true);
+                return;
+            }
+            if((_pendingPlayStash||(live&&live.has_pending_bot))&&retry<60){
+                scheduleBotCaptureAfterReveal(st,retry+1);
+                return;
+            }
+            _finishBotCaptureSync(true);
+            return;
+        }
+        if(_botCaptureTimer) return;
+        var stash=_stashForBotCapture(live||st);
+        var data=_deferredSocketCapture;
+        _deferredSocketCapture=null;
+        if(data) data=mergeBotCaptureEvent(data,stash);
+        else if(stash&&(stash.pending_bot_is_capture||_botCaptureTableStash)){
+            data=captureEventFromState(stash);
+        } else {
+            _abortBotCaptureVisual(true);
+            return;
+        }
+        if(!data.captured||!data.captured.length){
+            if(!data.is_chkobba){
+                _abortBotCaptureVisual(true);
+                return;
+            }
+        }
+        runSocketCaptureFly(data);
+    },delay);
+}
+
+function afterBotPendingRevealed(st){
+    st=_playStateForBotAnim(st);
+    if(!st) return;
+    var capturing=_botPlayShowsCapture(st);
+    if(!st.pending_bot_played_card && !_pendingPlayStash && !capturing){
+        _finishBotCaptureSync(true);
+        return;
+    }
+    if(!capturing && !st.has_pending_bot && !_pendingPlayStash){
+        _finishBotCaptureSync(true);
+        return;
+    }
+    if(capturing){
+        _armBotCaptureFlyPending();
+        _stashBotCaptureTable(st);
+        if(_useSocket()) scheduleBotCaptureAfterReveal(st);
+        else animateBotCapture(st);
+    } else if(_useSocket()) {
+        scheduleBotCaptureAfterReveal(st);
+    } else {
+        scheduleBotTurn(st);
+    }
 }
 
 // ── Deterministic hash: same card string → same scatter position ────────
@@ -1161,13 +1530,22 @@ function scatterAndFlip(container,snap){
     });
     if(!snap){
         var appearCard=container.querySelector('.fly-from-human,.fly-from-bot');
-        if(appearCard) appearCard.style.animation='cardAppear .25s ease';
+        // Only play the appear animation when this card genuinely just landed —
+        // not on every table re-render (which made an unchanged card "refresh").
+        if(appearCard){
+            var _acs=appearCard.dataset.cardStr||'';
+            if(_acs && _acs!==_lastAppearedCard){
+                appearCard.style.animation='cardAppear .25s ease';
+                _lastAppearedCard=_acs;
+            }
+        }
         return;
     }
     var newCard=container.querySelector('.fly-from-human,.fly-from-bot');
     var fromBot=newCard&&newCard.classList.contains('fly-from-bot');
     if(newCard){
         newCard.classList.remove('fly-from-human','fly-from-bot');
+        if(newCard.dataset.cardStr) _lastAppearedCard=newCard.dataset.cardStr;
     }
     var fromRect=fromBot?snap.bot:snap.played;
     var toAnim=[];
@@ -1208,17 +1586,17 @@ function scatterAndFlip(container,snap){
 
 // Animate captured cards from table to a capture pile (human or bot)
 function flyToPile(elements, targetSelector, duration, rects){
-    duration = duration || CAPTURE_FLY_BASE_MS;
     var n = elements && elements.length ? elements.length : 0;
-    if(n > 1) duration = pileFlyDurationMs(duration, n);
-    var target = document.querySelector(targetSelector);
-    if(!target || !elements || !elements.length) return;
-    var tr = target.getBoundingClientRect();
-    var tx = tr.left + tr.width/2;
-    var ty = tr.top + tr.height/2;
+    if(duration == null || duration === undefined) duration = pileFlyDurationMs(CAPTURE_FLY_BASE_MS, n);
+    if(!elements || !elements.length) return;
 
     elements.forEach(function(el, i){
-        var r = (rects && rects[i]) ? rects[i] : el.getBoundingClientRect();
+        var r = (rects && rects[i]) ? rects[i] : null;
+        if(!r || r.width < 2 || r.height < 2){
+            try { r = rectObj(el.getBoundingClientRect()); } catch(e) { return; }
+        }
+        if(r.width < 2 || r.height < 2) return;
+
         var clone = el.cloneNode(true);
         clone.style.position = 'fixed';
         clone.style.left = r.left + 'px';
@@ -1229,16 +1607,26 @@ function flyToPile(elements, targetSelector, duration, rects){
         clone.style.zIndex = '999';
         clone.style.transition = 'transform ' + duration + 'ms cubic-bezier(.2, .8, .2, 1), opacity ' + duration + 'ms ease';
         clone.style.pointerEvents = 'none';
-        clone.classList.remove('capture-flash', 'chkobba-glow', 'fly-from-human', 'fly-from-bot');
+        // Strip classes whose CSS animations (e.g. botAppear on .bot-capture-card)
+        // would override the inline fly transform and pin the clone in place.
+        clone.classList.remove('capture-flash', 'chkobba-glow', 'fly-from-human', 'fly-from-bot', 'bot-capture-card');
+        clone.style.animation = 'none';
         document.body.appendChild(clone);
 
-        // Hide original so only the clone is visible
-        if(el.parentNode) el.style.opacity = '0';
+        if(el.parentNode){
+            el.style.visibility = 'hidden';
+            el.style.opacity = '0';
+        }
 
         requestAnimationFrame(function(){
             requestAnimationFrame(function(){
-                var dx = tx - (r.left + r.width/2);
-                var dy = ty - (r.top + r.height/2);
+                var target = document.querySelector(targetSelector);
+                if(!target){ if(clone.parentNode) clone.parentNode.removeChild(clone); return; }
+                var tr = target.getBoundingClientRect();
+                var tx = tr.left + tr.width / 2;
+                var ty = tr.top + tr.height / 2;
+                var dx = tx - (r.left + r.width / 2);
+                var dy = ty - (r.top + r.height / 2);
                 clone.style.transform = 'translate(' + dx.toFixed(1) + 'px, ' + dy.toFixed(1) + 'px) scale(0.6) rotate(15deg)';
                 clone.style.opacity = '0.3';
             });
@@ -1247,6 +1635,18 @@ function flyToPile(elements, targetSelector, duration, rects){
         setTimeout(function(){
             if(clone.parentNode) clone.parentNode.removeChild(clone);
         }, duration + 50);
+    });
+}
+
+function _cardStrOnEl(el){
+    if(!el) return '';
+    return (el.dataset.cardStr || el.getAttribute('data-card-str') || el.textContent || '').trim();
+}
+
+function _snapshotFlyRects(elements){
+    return elements.map(function(el){
+        try { return rectObj(el.getBoundingClientRect()); }
+        catch(e) { return { left: 0, top: 0, width: 0, height: 0 }; }
     });
 }
 
@@ -1297,9 +1697,9 @@ function animateDeal(st, onDone, includeTableCards){
                 if(botCards[i]) seq.push({el: botCards[i], isBot: true});
                 if(humanCards[i]) seq.push({el: humanCards[i], isBot: false});
             }
+            if(botPendingCard) seq.push({el: botPendingCard, isBot: true, isPending: true});
             if(!seq.length){
                 document.querySelectorAll('#table-cards .table-card:not(.table-slot-empty), #hand-cards .hand-card, #bot-cards .card:not(.bot-capture-card)').forEach(function(c){ c.style.visibility = ''; });
-                if(botPendingCard) botPendingCard.style.visibility = 'visible';
                 if(onDone) onDone();
                 return;
             }
@@ -1337,13 +1737,12 @@ function animateDeal(st, onDone, includeTableCards){
 
                     setTimeout(function(){
                         if(clone.parentNode) clone.parentNode.removeChild(clone);
-                        item.el.style.visibility='visible';
+                        item.el.style.visibility=item.isPending?'hidden':'visible';
                     }, dealMs(500)+40);
                 }, idx * dealMs(250));
             });
             var lastEnd = seq.length ? (seq.length - 1) * dealMs(250) + dealMs(500) + 120 : 0;
             setTimeout(function(){
-                if(botPendingCard) botPendingCard.style.visibility = 'visible';
                 if(onDone) onDone();
             }, lastEnd);
         });
@@ -1441,9 +1840,10 @@ function animateOpeningDealSequenced(st, kind, cutStr, onDone){
 
 // ── Mid-round draw: animate cards from deck to hand by DOM index ────────
 function animateDrawCards(selector, indices){
-    if(!indices || !indices.length) return;
+    if(!indices || !indices.length) return 0;
     var o = getDeckFlyOrigin();
     var deckX = o.x, deckY = o.y;
+    var lastEnd = 0;
 
     var cards=document.querySelectorAll(selector);
     indices.forEach(function(idx, order){
@@ -1459,6 +1859,8 @@ function animateDrawCards(selector, indices){
 
         var tx=(r.left+r.width/2)-deckX;
         var ty=(r.top+r.height/2)-deckY;
+        var landAt=dealMs(550)+order*dealMs(120)+40;
+        lastEnd=Math.max(lastEnd, landAt);
 
         setTimeout(function(){
             requestAnimationFrame(function(){
@@ -1471,22 +1873,31 @@ function animateDrawCards(selector, indices){
         setTimeout(function(){
             if(clone.parentNode) clone.parentNode.removeChild(clone);
             cardEl.style.visibility='visible';
-        }, dealMs(550)+order*dealMs(120));
+        }, landAt);
     });
+    return lastEnd + 80;
 }
 
 // ── Shared bot capture animation (solo / bot replacement) ─────────────────
 var _botCaptureTimer = null;
 var _botAnimating = false;
-var OPP_CAPTURE_REVEAL_MS = 400;
 var CHKOBBA_ANIM_MS = 800;
 
 function _finishBotCaptureSync(force){
     _botAnimating = false;
     _botCaptureTimer = null;
+    _botCaptureFlyDone = false;
+    _botCaptureFlyStarted = false;
+    _botCaptureTableStash = null;
+    _pendingPlayStash = null;
+    _botCaptureIntentStash = null;
+    _botRevealPipelineActive = false;
     _isDealing = false;
     if(!_state) return;
     if(!force && _useSocket() && _state.has_pending_bot) return;
+    // Fly is finished — release the table freeze so the post-capture rebuild runs.
+    _botCaptureFlyPending = false;
+    if(_botCaptureFlyWatchdog){ clearTimeout(_botCaptureFlyWatchdog); _botCaptureFlyWatchdog = null; }
     _botMoveCommitted = true;
     var human = !!(_state.human_is_current && !_state.round_over && !_state.has_pending_bot);
     var oppName = _state.bot_name || 'Opponent';
@@ -1502,20 +1913,95 @@ function _finishBotCaptureSync(force){
     else if(!human) _clearSelectionUI();
 }
 
-function _onDealAnimationDone(fallbackSt, scheduleBotAjax){
-    _isDealing = false;
-    document.documentElement.classList.remove('chk-opp-first-boot');
-    var live = _state || fallbackSt;
+function _stashPendingPlayFromState(st){
+    if(!st||(!st.has_pending_bot&&!st.pending_bot_played_card)) return;
+    _pendingPlayStash={
+        has_pending_bot:true,
+        pending_bot_played_card:st.pending_bot_played_card,
+        pending_bot_is_capture:!!st.pending_bot_is_capture,
+        pending_bot_is_chkobba:!!st.pending_bot_is_chkobba,
+        pending_bot_captured_indices:(st.pending_bot_captured_indices||[]).slice()
+    };
+}
+
+function _augmentBotAnimStashFromPrev(prevState){
+    if(!prevState||!prevState.has_pending_bot) return;
+    _stashPendingPlayFromState(prevState);
+    if(prevState.pending_bot_is_capture){
+        _stashBotCaptureTable(prevState);
+        _botCaptureIntentStash={
+            pending_bot_is_capture:true,
+            pending_bot_is_chkobba:!!prevState.pending_bot_is_chkobba,
+            pending_bot_played_card:prevState.pending_bot_played_card,
+            pending_bot_captured_indices:(prevState.pending_bot_captured_indices||[]).slice()
+        };
+    }
+}
+
+function _botPlayShowsCapture(st){
+    st=st||_state;
+    return !!(st&&(st.pending_bot_is_capture||
+        (_botCaptureIntentStash&&_botCaptureIntentStash.pending_bot_is_capture)||
+        (_botCaptureTableStash&&_botCaptureTableStash.pending_bot_is_capture)));
+}
+
+function _playStateForBotAnim(fallbackSt){
+    var live=_state||fallbackSt;
+    if(!live) return fallbackSt;
+    var merged={};
+    for(var k in live){ if(Object.prototype.hasOwnProperty.call(live,k)) merged[k]=live[k]; }
+    if(_pendingPlayStash){
+        for(var p in _pendingPlayStash){ if(Object.prototype.hasOwnProperty.call(_pendingPlayStash,p)) merged[p]=_pendingPlayStash[p]; }
+    }
+    if(_botCaptureIntentStash){
+        for(var c in _botCaptureIntentStash){ if(Object.prototype.hasOwnProperty.call(_botCaptureIntentStash,c)) merged[c]=_botCaptureIntentStash[c]; }
+    }
+    if((_pendingPlayStash||_botCaptureIntentStash)&&!merged.pending_bot_played_card){
+        merged.pending_bot_played_card=(_pendingPlayStash&&_pendingPlayStash.pending_bot_played_card)||
+            (_botCaptureIntentStash&&_botCaptureIntentStash.pending_bot_played_card);
+    }
+    if(_pendingPlayStash||_botCaptureIntentStash) merged.has_pending_bot=true;
+    return merged;
+}
+
+function _ensureBotPendingCardDom(st){
+    st=_playStateForBotAnim(st);
+    if(!st||!st.pending_bot_played_card) return document.querySelector('.bot-capture-card');
+    var bc=document.querySelector('.bot-capture-card');
+    if(bc) return bc;
+    var bcZone=document.getElementById('bot-cards');
+    if(!bcZone) return null;
+    // buildBotHand subtracts 1 for the pending card, assuming bot_hand_count still
+    // INCLUDES it (pre-commit). After the move commits server-side the count is
+    // already decremented — add the pending card back so we don't render one too
+    // few hidden backs.
+    var rawPending=!!(_state&&_state.has_pending_bot);
+    var total=rawPending?st.bot_hand_count:(st.bot_hand_count+1);
+    bcZone.innerHTML=buildBotHand(total,true,st.pending_bot_played_card);
+    bcZone.querySelectorAll('.bot-capture-card').forEach(enhance);
+    bc=bcZone.querySelector('.bot-capture-card');
+    if(bc){
+        bc.style.visibility='hidden';
+        bc.dataset.revealed='0';
+    }
+    return bc;
+}
+
+function resumeBotPendingAfterZoneAnim(fallbackSt, opts){
+    opts = opts || {};
+    if(_isDealing) return;
+    if(_oppRevealInFlight()) return;
+    var live = _playStateForBotAnim(fallbackSt);
+    if(_botAnimating){
+        if(live && !live.has_pending_bot && !_pendingPlayStash && !_botCaptureIntentStash) _finishBotCaptureSync(true);
+        return;
+    }
     if(!live) return;
     var oppName = live.bot_name || 'Opponent';
     var humanTurn = !!(live.human_is_current && !live.has_pending_bot &&
                        !live.round_over && !live.awaiting_cut_choice);
     _applyHandSelectability(humanTurn);
-    var _bccDone = document.querySelector('#bot-cards .bot-capture-card');
-    if(_bccDone && live.has_pending_bot){
-        _bccDone.style.visibility = 'visible';
-        _pendingBotSnap = takeSnap(_bccDone, true);
-    }
+    _ensureBotPendingCardDom(live);
     var hintEl = document.getElementById('selection-hint');
     if(hintEl && !live.awaiting_cut_choice){
         if(live.has_pending_bot) hintEl.textContent = oppPlayingMsg(oppName);
@@ -1527,24 +2013,46 @@ function _onDealAnimationDone(fallbackSt, scheduleBotAjax){
         else if(!live.human_is_current) bStEl.innerHTML = '<span class="badge thinking">Thinking…</span>';
         else bStEl.innerHTML = '';
     }
+    var playCard=live.pending_bot_played_card||
+        (_pendingPlayStash&&_pendingPlayStash.pending_bot_played_card)||
+        (_botCaptureIntentStash&&_botCaptureIntentStash.pending_bot_played_card);
+    if(!playCard){
+        if(opts.allowSyncFinish && !live.has_pending_bot && !_pendingPlayStash) _finishBotCaptureSync(true);
+        return;
+    }
+    if(!_useSocket()){
+        _botRevealPipelineActive=true;
+        if(_botPlayShowsCapture(live)) animateBotCapture(live);
+        else scheduleBotTurn(live);
+        return;
+    }
+    document.documentElement.classList.remove('chk-opp-first-boot');
+    var bc = document.querySelector('.bot-capture-card');
+    if(bc && !_botPendingNeedsReveal(bc)){
+        _botRevealPipelineActive=true;
+        afterBotPendingRevealed(live);
+        return;
+    }
+    _botRevealPipelineActive=true;
+    revealBotPendingCard(playCard, function(){
+        afterBotPendingRevealed(_playStateForBotAnim(fallbackSt));
+    });
+}
+
+function _onDealAnimationDone(fallbackSt, scheduleBotAjax){
+    _isDealing = false;
+    document.documentElement.classList.remove('chk-opp-first-boot');
+    if(!_playStateForBotAnim(fallbackSt)) return;
+    var pauseMs=(_pendingPlayStash||(fallbackSt&&fallbackSt.has_pending_bot))?280:120;
     setTimeout(function(){
-        var cur = _state || fallbackSt;
-        if(!cur) return;
-        var useSocket = !!(window.Game && window.Game.socket && window.Game.socket.connected);
-        if(cur.has_pending_bot && cur.pending_bot_is_capture){
-            if(!useSocket) animateBotCapture(cur);
-        } else if(!cur.has_pending_bot){
-            _finishBotCaptureSync(true);
-        } else if(cur.has_pending_bot && scheduleBotAjax && !useSocket){
-            scheduleBotTurn(cur);
-        }
-    }, 200);
+        resumeBotPendingAfterZoneAnim(fallbackSt, { allowSyncFinish: true });
+    }, pauseMs);
 }
 
 function animateBotCapture(st){
     if(_botCaptureTimer) return;
-    st = st || _state;
-    if(!st || !st.has_pending_bot || !st.pending_bot_is_capture){
+    st = _playStateForBotAnim(st) || _state;
+    if(!st || (!st.has_pending_bot && !_pendingPlayStash) || !st.pending_bot_is_capture){
         if(_state && !_state.has_pending_bot) _finishBotCaptureSync();
         return;
     }
@@ -1554,34 +2062,134 @@ function animateBotCapture(st){
     var capEls = (st.pending_bot_captured_indices||[]).map(function(ci){
         return document.querySelector('[data-table-index="'+ci+'"]');
     }).filter(Boolean);
+    var captureData = captureEventFromState(st);
+    capEls = collectBotCaptureTableEls(captureData, st);
     if(!capEls.length){
         capEls = Array.from(document.querySelectorAll('#table-cards .table-card:not(.table-slot-empty)'));
     }
 
     function runBotCapture(){
+        var flyEls = capEls.slice();
+        if(bc && bc.parentNode) flyEls.push(bc);
+        if(!flyEls.length){ _finishBotCaptureSync(true); return; }
+        var rects = _snapshotFlyRects(flyEls);
+        var flyMs = pileFlyDurationMs(CAPTURE_FLY_BASE_MS, flyEls.length);
+        function doAjaxFly(){
+            window.playCardCaptureSound();
+            flyEls.forEach(function(e){ e.classList.add('capture-flash'); });
+            flyToPile(flyEls, '#bot-cap', flyMs, rects);
+            _botCaptureTimer = setTimeout(function(){
+                _botCaptureTimer = null;
+                _finishBotCaptureSync(true);
+            }, flyMs + CAPTURE_SYNC_PAD_MS);
+        }
         if(st.pending_bot_is_chkobba && window.chkobbaAnimation){
             capEls.forEach(function(e){ e.classList.add('chkobba-glow'); });
             if(window.showCommentaryToast && window.toastsEnabled && window.toastsEnabled())
                 window.showCommentaryToast('Mabrouk! \uD83C\uDF89');
             var felt = document.querySelector('.felt-cards') || document.querySelector('.felt');
             setTimeout(function(){
-                window.chkobbaAnimation(felt || document.body, function(){
-                    _finishBotCaptureSync();
-                });
+                window.chkobbaAnimation(felt || document.body, doAjaxFly);
             }, 200);
             _botCaptureTimer = -1;
         } else {
-            window.playCardCaptureSound();
-            capEls.forEach(function(e){ e.classList.add('capture-flash'); });
-            var flyEls = capEls.slice();
-            if(bc) flyEls.push(bc);
-            var flyMs = pileFlyDurationMs(CAPTURE_FLY_BASE_MS, flyEls.length);
-            flyToPile(flyEls, '#bot-cap', flyMs);
-            _botCaptureTimer = setTimeout(function(){ _finishBotCaptureSync(true); }, OPP_CAPTURE_REVEAL_MS + flyMs + CAPTURE_SYNC_PAD_MS);
+            setTimeout(doAjaxFly, OPP_CAPTURE_REVEAL_MS);
         }
     }
 
     _botCaptureTimer = setTimeout(runBotCapture, OPP_CAPTURE_REVEAL_MS);
+}
+
+function _stashForBotCapture(st){
+    if(st && st.table_slots && st.table_slots.some(function(s){ return s&&s.card; })) return st;
+    return _botCaptureTableStash || st || _state;
+}
+
+function mergeBotCaptureEvent(socketData,st){
+    var fromSt=captureEventFromState(st||_state);
+    var out={
+        seat:(socketData&&typeof socketData.seat==='number')?socketData.seat:fromSt.seat,
+        played_card:(socketData&&socketData.played_card)||fromSt.played_card,
+        captured:(socketData&&socketData.captured&&socketData.captured.length)
+            ?socketData.captured.slice():(fromSt.captured||[]).slice(),
+        is_chkobba:!!(socketData&&socketData.is_chkobba)||!!fromSt.is_chkobba
+    };
+    return out;
+}
+
+function ensureTableVisibleForBotCapture(st, captureData){
+    st=_stashForBotCapture(st);
+    if(!st||!st.table_slots) return;
+    var tc=document.getElementById('table-cards');
+    if(!tc) return;
+    var needRebuild=false;
+    if(captureData&&captureData.captured&&captureData.captured.length){
+        var cap=captureData.captured;
+        var found=0;
+        tc.querySelectorAll('.table-card:not(.table-slot-empty)').forEach(function(el){
+            if(cap.indexOf(_cardStrOnEl(el))>=0) found++;
+        });
+        if(found<cap.length) needRebuild=true;
+    } else if(!tc.querySelector('.table-card:not(.table-slot-empty)')){
+        needRebuild=true;
+    } else {
+        return;
+    }
+    var hasSome=st.table_slots.some(function(s){ return s&&s.card; });
+    if(!hasSome) return;
+    if(!needRebuild) return;
+    var human=!!(_state&&_state.human_is_current&&!_state.has_pending_bot);
+    tc.innerHTML=buildTable(st.table_slots,human,st.last_played_card,st.last_played_by);
+    tc.querySelectorAll('.table-card:not(.table-slot-empty)').forEach(enhance);
+    scatterAndFlip(tc,null);
+}
+
+function collectBotCaptureTableEls(data,st){
+    st=_stashForBotCapture(st);
+    ensureTableVisibleForBotCapture(st, data);
+    var tcEl=document.getElementById('table-cards');
+    if(!tcEl) return [];
+    if(data.is_chkobba){
+        return Array.from(tcEl.querySelectorAll('.table-card:not(.table-slot-empty)'));
+    }
+    var tableEls=[];
+    (data.captured||[]).forEach(function(cardStr){
+        tcEl.querySelectorAll('.table-card:not(.table-slot-empty)').forEach(function(el){
+            if(_cardStrOnEl(el)===cardStr&&tableEls.indexOf(el)<0) tableEls.push(el);
+        });
+    });
+    if(!tableEls.length&&st){
+        (st.pending_bot_captured_indices||[]).forEach(function(ci){
+            var el=tcEl.querySelector('[data-table-index="'+ci+'"]');
+            if(el&&!el.classList.contains('table-slot-empty')&&tableEls.indexOf(el)<0) tableEls.push(el);
+        });
+    }
+    if(!tableEls.length&&st&&st.pending_bot_is_capture){
+        var all=Array.from(tcEl.querySelectorAll('.table-card:not(.table-slot-empty)'));
+        if(all.length>0&&all.length<=4) tableEls=all;
+    }
+    return tableEls;
+}
+
+function oppCaptureRevealMs(st){
+    return (st&&st.round_moves_played===0)?380:OPP_CAPTURE_REVEAL_MS;
+}
+
+function botPostRevealCaptureMs(st){
+    if(st&&st.round_moves_played===0&&!st.pending_bot_is_chkobba) return 420;
+    return BOT_POST_REVEAL_CAPTURE_MS;
+}
+
+function _botPendingNeedsReveal(bc){
+    if(!bc) return true;
+    if(bc.classList.contains('card-back')) return true;
+    if(bc.dataset.revealed!=='1') return true;
+    return false;
+}
+
+function queueBotCaptureEvent(data){
+    if(!data||typeof data.seat!=='number') return;
+    _deferredSocketCapture=mergeBotCaptureEvent(data,_stashForBotCapture(_state));
 }
 
 function runSocketCaptureFly(data){
@@ -1616,51 +2224,64 @@ function runSocketCaptureFly(data){
         return;
     }
 
-    if(_botAnimating || _botCaptureTimer) return;
+    if(_botCaptureFlyDone || _botCaptureFlyStarted) return;
+
+    if(_isDealing){
+        _deferredSocketCapture = data;
+        return;
+    }
+
+    var bc = document.querySelector('.bot-capture-card');
+    if(!bc || bc.dataset.revealed !== '1'){
+        // Card not revealed yet — park the capture; the reveal's completion path
+        // re-drives it. (A faster watchdog recovers if that ever fails.)
+        _deferredSocketCapture = data;
+        return;
+    }
+    // The card IS revealed (we know what it is). A deferred snapshot may have left
+    // it hidden — make it visible and fly it rather than stalling the capture.
+    if(bc.style.visibility === 'hidden') bc.style.visibility = 'visible';
+
+    if(_botCaptureTimer && _botCaptureTimer !== -1) return;
+
     _botAnimating = true;
+    _botCaptureFlyStarted = true;
     window.playCardCaptureSound();
+    var captureData = mergeBotCaptureEvent(data, _stashForBotCapture(_state));
 
     function doFly(){
-        var flyEls = [];
-        var bc = document.querySelector('.bot-capture-card');
-        if(bc) flyEls.push(bc);
-        var oppHost = document.getElementById('bot-cards');
-        if(!bc && oppHost){
-            var oppCard = oppHost.querySelector('.card-back') || oppHost.querySelector('.card');
-            if(oppCard) flyEls.push(oppCard);
-        }
-        var tcEl = document.getElementById('table-cards');
-        var captured = data.captured || [];
-        if(tcEl){
-            captured.forEach(function(cardStr){
-                tcEl.querySelectorAll('.table-card:not(.table-slot-empty)').forEach(function(el){
-                    if(el.dataset.cardStr === cardStr) flyEls.push(el);
-                });
-            });
-        }
+        if(_botCaptureFlyDone) return;
+        var stash = _stashForBotCapture(_state);
+        var tableEls = collectBotCaptureTableEls(captureData, stash);
+        var bcNow = document.querySelector('.bot-capture-card');
+        var flyEls = tableEls.slice();
+        if(bcNow && bcNow.parentNode) flyEls.push(bcNow);
         if(!flyEls.length){
+            _botCaptureFlyStarted = false;
             _finishBotCaptureSync(true);
             return;
         }
+        _botCaptureFlyDone = true;
+        var rects = _snapshotFlyRects(flyEls);
         flyEls.forEach(function(e){ e.classList.add('capture-flash'); });
         var flyMs = pileFlyDurationMs(CAPTURE_FLY_BASE_MS, flyEls.length);
-        var pileId = '#bot-cap';
-        flyToPile(flyEls, pileId, flyMs);
+        flyToPile(flyEls, '#bot-cap', flyMs, rects);
         _botCaptureTimer = setTimeout(function(){
             _botCaptureTimer = null;
+            _botCaptureFlyStarted = false;
             _finishBotCaptureSync(true);
         }, flyMs + CAPTURE_SYNC_PAD_MS);
     }
 
-    if(data.is_chkobba && window.chkobbaAnimation){
-        var capOnTable = Array.from(document.querySelectorAll('#table-cards .table-card:not(.table-slot-empty)'));
+    if(captureData.is_chkobba && window.chkobbaAnimation){
+        var capOnTable = collectBotCaptureTableEls(captureData, _stashForBotCapture(_state));
         capOnTable.forEach(function(e){ e.classList.add('chkobba-glow'); });
         var felt = document.querySelector('.felt-cards') || document.querySelector('.felt');
         setTimeout(function(){
             window.chkobbaAnimation(felt || document.body, doFly);
-        }, 200);
+        }, 550);
     } else {
-        setTimeout(doFly, OPP_CAPTURE_REVEAL_MS);
+        setTimeout(doFly, 80);
     }
 }
 
@@ -1787,6 +2408,7 @@ function applyState(st,snap,prevStateOverride){
         if(_rop) _rop.style.display='none';
     }
     if(st.round_over){
+        _activeHandDealKey=null;
         var tcRo=document.getElementById('table-cards');
         if(tcRo){
             var hasTRo=tcRo.querySelector('.table-card:not(.table-slot-empty)');
@@ -1828,16 +2450,32 @@ function applyState(st,snap,prevStateOverride){
     // Detect bot move committed (prevStateOverride: socket setState already updated _state).
     if(!_botMoveCommitted && !st.has_pending_bot && prevStateOverride && prevStateOverride.has_pending_bot){
         _botMoveCommitted = true;
+        _augmentBotAnimStashFromPrev(prevStateOverride);
+    }
+
+    // Bot hand re-dealt (opening / mid-round refill) → previous bot move is over.
+    // Drop leftover pending/capture stash NOW (before the deferred early return)
+    // so last hand's bot card can't surface as an extra (4th) card. Genuine pending
+    // for the new hand is re-stashed from `st`.
+    if((st.bot_hand_count || 0) > (_prevBotHandCount || 0) && !_botCaptureFlyStarted){
+        _clearStaleBotPending();
+        if(st.has_pending_bot) _stashPendingPlayFromState(st);
     }
 
     var human=!!(st.human_is_current&&!st.round_over&&!st.has_pending_bot);
     var oppName=st.bot_name||'Opponent';
 
-    if(_isDealing || _botAnimating){
+    if(_deferSnapshotDom()){
         _applyHudOnly(st, human, oppName);
         if(st.has_pending_bot){
+            if(!_oppRevealInFlight()) _resetBotRevealPipeline();
+            _stashPendingPlayFromState(st);
+            if(st.pending_bot_is_capture){ _stashBotCaptureTable(st); _armBotCaptureFlyPending(); }
             var _snapBcDeal=document.querySelector('.bot-capture-card');
             if(_snapBcDeal) _pendingBotSnap=takeSnap(_snapBcDeal,true);
+        }
+        if(st.table_slots&&st.table_slots.some(function(s){ return s&&s.card; })){
+            _stashBotCaptureTable(st);
         }
         _prevHumanHandLen=st.human_hand?st.human_hand.length:0;
         _prevBotHandCount=st.bot_hand_count||0;
@@ -1845,6 +2483,16 @@ function applyState(st,snap,prevStateOverride){
         _prevHumanHand=st.human_hand?st.human_hand.slice():[];
         _prevAwaitingCutChoice=!!st.awaiting_cut_choice;
         _state=st;
+        if(!st.has_pending_bot&&_pendingPlayStash&&!_botPlayShowsCapture(_playStateForBotAnim(st))&&
+           !_botAnimating&&!_oppRevealInFlight()){
+            var bcDone=document.querySelector('.bot-capture-card');
+            if(!bcDone||bcDone.dataset.revealed==='1'){
+                if(bcDone&&!_pendingBotSnap) _pendingBotSnap=takeSnap(bcDone,true);
+                _finishBotCaptureSync(true);
+                return;
+            }
+        }
+        _tryResumeBotRevealFromHud(st);
         return;
     }
 
@@ -1970,13 +2618,38 @@ function applyState(st,snap,prevStateOverride){
     if(!oppOpensFirstDeal && !openingOppPaintHold && !isOpeningDeal && !isMidRoundHandDeal && !_isDealing && !_botAnimating && _botMoveCommitted){
         _syncGameDom(st, human, snap || _pendingBotSnap);
         if(!st.has_pending_bot) _pendingBotSnap = null;
-    }
-    if(st.has_pending_bot && !snap){
-        var _snapBc=document.querySelector('.bot-capture-card');
-        if(_snapBc) _pendingBotSnap=takeSnap(_snapBc,true);
+    } else if(openingOppPaintHold && st.has_pending_bot && st.pending_bot_played_card &&
+              !_isDealing && !isOpeningDeal && !isMidRoundHandDeal){
+        var tcHold=document.getElementById('table-cards');
+        if(tcHold&&st.table_slots&&!tcHold.querySelector('.table-card:not(.table-slot-empty)')){
+            tcHold.innerHTML=buildTable(st.table_slots,false,st.last_played_card,st.last_played_by);
+            tcHold.querySelectorAll('.table-card:not(.table-slot-empty)').forEach(enhance);
+            scatterAndFlip(tcHold,null);
+        }
+        var bcHold=document.getElementById('bot-cards');
+        if(bcHold){
+            bcHold.innerHTML=buildBotHand(st.bot_hand_count,true,st.pending_bot_played_card);
+            bcHold.querySelectorAll('.card-back').forEach(function(c){
+                if(!c.classList.contains('bot-capture-card')) c.style.visibility='';
+            });
+            var _bccHold=bcHold.querySelector('.bot-capture-card');
+            if(_bccHold) _bccHold.style.visibility='hidden';
+            _domFp.bot=_fpBot(st);
+        }
     }
 
     if(isOpeningDeal && !_isDealing){
+        _activeHandDealKey=null;
+        // Always drop leftover pending/capture state from the previous round first
+        // (esp. _botCaptureIntentStash, which would otherwise overwrite the new
+        // pending card with last round's last bot card → an extra 4th card), then
+        // re-stash only the genuine new pending move.
+        _clearStaleBotPending();
+        if(st.has_pending_bot){
+            _resetBotRevealPipeline();
+            _stashPendingPlayFromState(st);
+        }
+        _stashBotCaptureTable(st);
         _isDealing = true;
         _botMoveCommitted = false;
         _resetDomFp();
@@ -2022,6 +2695,12 @@ function applyState(st,snap,prevStateOverride){
     }
 
     if(isMidRoundHandDeal && !_isDealing){
+        var handDealKey=_handDealKey(st);
+        if(_activeHandDealKey!==handDealKey){
+        _activeHandDealKey=handDealKey;
+        _clearStaleBotPending();
+        if(st.has_pending_bot) _stashPendingPlayFromState(st);
+        _stashBotCaptureTable(st);
         _isDealing = true;
         _botMoveCommitted = false;
         window.playCardDealMiddleSound();
@@ -2042,26 +2721,39 @@ function applyState(st,snap,prevStateOverride){
         animateDeal(st, function(){ _onDealAnimationDone(st, true); }, false);
         _domFp.hand = _fpHand(st);
         _domFp.bot = _fpBot(st);
+        }
     }
 
+    var drawAnimMs=0;
     if(!isOpeningDeal && !isMidRoundHandDeal && _prevDeckRemaining>(st.deck_remaining||0)){
         window.playCardDealMiddleSound();
-        // Human: find new card indices by content comparison
         if(st.human_hand&&_prevHumanHand){
             var hIdxs=[];
             for(var _hi=0;_hi<st.human_hand.length;_hi++){
                 if(_prevHumanHand.indexOf(st.human_hand[_hi])===-1) hIdxs.push(_hi);
             }
-            if(hIdxs.length) animateDrawCards('#hand-cards .hand-card', hIdxs);
+            if(hIdxs.length) drawAnimMs=Math.max(drawAnimMs, animateDrawCards('#hand-cards .hand-card', hIdxs));
         }
-        // Bot: find new card-back indices
         if((st.bot_hand_count||0)>_prevBotHandCount){
             var bEls=document.querySelectorAll('#bot-cards .card-back');
             var bNew=st.bot_hand_count-_prevBotHandCount;
             var bIdxs=[];
             for(var _bi=bEls.length-bNew;_bi<bEls.length;_bi++) bIdxs.push(_bi);
-            if(bIdxs.length) animateDrawCards('#bot-cards .card-back', bIdxs);
+            if(bIdxs.length) drawAnimMs=Math.max(drawAnimMs, animateDrawCards('#bot-cards .card-back', bIdxs));
         }
+        if(drawAnimMs>0){
+            _isDealing=true;
+            setTimeout(function(){
+                _isDealing=false;
+                resumeBotPendingAfterZoneAnim(st);
+            }, drawAnimMs);
+        }
+    }
+
+    if(!isOpeningDeal && !isMidRoundHandDeal && drawAnimMs===0 && !_isDealing &&
+       (st.has_pending_bot || _pendingPlayStash) && (st.pending_bot_played_card ||
+        (_pendingPlayStash && _pendingPlayStash.pending_bot_played_card))){
+        resumeBotPendingAfterZoneAnim(st);
     }
 
     _prevHumanHandLen=st.human_hand?st.human_hand.length:0;
@@ -2100,31 +2792,39 @@ function animateOpponentReveal(playedCard){
     var zr = zone.getBoundingClientRect();
 
     var reveal = document.createElement('div');
-    reveal.className = 'card card-back opp-reveal-card';
+    reveal.className = 'opp-reveal-card';
     reveal.style.left = (ar.left - zr.left + ar.width / 2) + 'px';
     reveal.style.top = (ar.top - zr.top + ar.height / 2) + 'px';
+    reveal.style.setProperty('--flip-ms', BOT_REVEAL_FLIP_MS + 'ms');
+
+    var inner = document.createElement('div');
+    inner.className = 'opp-reveal-inner';
+    var front = document.createElement('div');
+    front.className = 'card-back opp-reveal-face opp-reveal-front';
+    var back = document.createElement('div');
+    back.className = 'card opp-reveal-face opp-reveal-back' + (isRed(playedCard) ? ' red-suit' : '');
+    back.textContent = playedCard;
+    enhance(back);
+    inner.appendChild(front);
+    inner.appendChild(back);
+    reveal.appendChild(inner);
     zone.appendChild(reveal);
 
-    // Phase 1: show back card from opponent hand.
-    requestAnimationFrame(function(){
-        reveal.classList.add('phase-back');
-    });
+    // Begin at the small hand-card size and grow to full table size during the flip.
+    var fullW = reveal.offsetWidth || ar.width;
+    var startScale = (fullW > 0 && ar.width > 0) ? Math.min(1, ar.width / fullW) : 1;
+    inner.style.setProperty('--start-scale', startScale.toFixed(3));
 
-    // Phase 2: flip to face.
-    setTimeout(function(){
+    // Flip from back to face in one motion.
+    requestAnimationFrame(function(){
         window.playCardPlaySound();
-        if(!reveal || !reveal.parentNode) return;
-        reveal.classList.remove('card-back');
-        reveal.textContent = playedCard;
-        if(isRed(playedCard)) reveal.classList.add('red-suit');
-        enhance(reveal);
-        reveal.classList.add('phase-face');
-    }, 140);
+        reveal.classList.add('flipping');
+    });
 
     // Cleanup shortly before authoritative snapshot lands.
     setTimeout(function(){
         if(reveal && reveal.parentNode) reveal.parentNode.removeChild(reveal);
-    }, 520);
+    }, BOT_REVEAL_FLIP_MS + BOT_REVEAL_SETTLE_MS + BOT_REVEAL_WATCHDOG_MS);
 }
 
 function scheduleBotTurn(st){
@@ -2156,14 +2856,19 @@ function playCard(handIdx,tableIdxs,handEl,tableEls,isCapture,isChk){
         _pendingCaptureEls=[];
         _pendingCaptureRects=[];
         if(_tcEl){
-            tableIdxs.forEach(function(ti){
-                _tcEl.querySelectorAll('.table-card').forEach(function(el){
-                    if(parseInt(el.dataset.tableIndex,10)===ti){
-                        _pendingCaptureEls.push(el);
-                        _pendingCaptureRects.push(rectObj(el.getBoundingClientRect()));
-                    }
+            if(isChk){
+                _pendingCaptureEls=Array.from(_tcEl.querySelectorAll('.table-card:not(.table-slot-empty)'));
+                _pendingCaptureRects=_snapshotFlyRects(_pendingCaptureEls);
+            } else {
+                tableIdxs.forEach(function(ti){
+                    _tcEl.querySelectorAll('.table-card').forEach(function(el){
+                        if(parseInt(el.dataset.tableIndex,10)===ti){
+                            _pendingCaptureEls.push(el);
+                            _pendingCaptureRects.push(rectObj(el.getBoundingClientRect()));
+                        }
+                    });
                 });
-            });
+            }
         }
         _pendingCaptureHandEl = handEl;
         _pendingCaptureHandRect = handEl ? rectObj(handEl.getBoundingClientRect()) : null;
@@ -2359,6 +3064,7 @@ function attachListeners(_captureMapIgnored){
     if(openDeal){
         _isDealing=true;
         _botMoveCommitted=false;
+        if(ps.has_pending_bot) _stashPendingPlayFromState(ps);
         setTimeout(function(){
             if(oppOpensFirstInit){
                 var humanP=!!(ps.human_is_current&&!ps.round_over&&!ps.has_pending_bot);
@@ -2403,8 +3109,11 @@ window._gameEngine={
     onServerConfirm:onServerConfirm,
     clearPlayBusy:clearPlayBusy,
     runSocketCaptureFly:runSocketCaptureFly,
+    queueBotCaptureEvent:queueBotCaptureEvent,
     isDealing:function(){ return _isDealing; },
     isBotAnimating:function(){ return _botAnimating; },
+    isBotRevealPipelineActive:function(){ return _botRevealPipelineActive; },
+    shouldDeferSnapshotDom:function(){ return _deferSnapshotDom(); },
     getState:function(){return _state;}, setState:function(s){_state=s;},
     _lastPredicted:null,
 };
@@ -2675,6 +3384,7 @@ document.addEventListener('DOMContentLoaded', function(){
         if(st.game_mode === 'solo') return;
         if(engine.isDealing && engine.isDealing()) return;
         if(engine.isBotAnimating && engine.isBotAnimating()) return;
+        if(engine.isBotRevealPipelineActive && engine.isBotRevealPipelineActive()) return;
         if(st.has_pending_bot) return;
         var host = document.getElementById('bot-cards');
         if(host && host.querySelector('.bot-capture-card')) return;
@@ -2683,7 +3393,14 @@ document.addEventListener('DOMContentLoaded', function(){
 
     window.Game.on('cards_captured', function(data){
         var eng = window._gameEngine;
-        if(eng && eng.runSocketCaptureFly) eng.runSocketCaptureFly(data);
+        if(!eng || !data || typeof data.seat !== 'number') return;
+        var st = eng.getState ? eng.getState() : null;
+        var mySeat = (st && st.my_seat != null) ? st.my_seat : 0;
+        if(data.seat === mySeat){
+            if(eng.runSocketCaptureFly) eng.runSocketCaptureFly(data);
+        } else if(eng.queueBotCaptureEvent){
+            eng.queueBotCaptureEvent(data);
+        }
     });
 
     // ── Disconnection handling ────────────────────────────────────────────

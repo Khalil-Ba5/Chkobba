@@ -1,91 +1,45 @@
-"""services/names.py — Tunisian display-name generation and guest-avatar helpers.
+"""services/names.py — Default display names and guest-avatar helpers.
 
 Public surface
 --------------
-    generate_display_name() -> str
-        Returns a random Tunisian-style name like "Si Ahmed", "Khalti Leila
-        el-Kahwagi", or "Houcine Sfaxi".  No two calls are guaranteed to
-        differ, so callers should store the result immediately.
+    format_player_number(n: int) -> str
+        Formats a stable numeric player id (e.g. "#1042").
+
+    ensure_default_display_name(guest_id: str) -> str
+        Ensures the guest row exists and returns its default numeric name.
 
     avatar_color(guest_id: str) -> str
-        Returns a stable hex colour string for the given guest_id.
-        The colour is deterministic: same guest_id → same colour.
+        Stable hex colour from guest_id.
 
     is_clean(name: str) -> bool
-        Returns True when the name contains no words from the block-list.
-        Intentionally minimal — avoids over-filtering Tunisian names.
+        Minimal profanity check for custom names.
 """
 
 from __future__ import annotations
 
 import hashlib
-import random
 
-# ---------------------------------------------------------------------------
-# Name components
-# ---------------------------------------------------------------------------
 
-# Male given names / honorific combos
-_MALE: list[str] = [
-    "Si Ahmed",
-    "Si Mohamed",
-    "Si Brahim",
-    "Houcine",
-    "Youssef",
-    "Karim",
-    "Maher",
-    "Ridha",
-    "Tarek",
-    "Jamel",
-    "Nabil",
-    "Sami",
-    "Hatem",
-    "Lotfi",
-    "Chokri",
-]
+def format_player_number(player_number: int) -> str:
+    """Format a sequential player id for display (4+ digits when under 10k)."""
+    n = int(player_number)
+    if n < 1:
+        n = 1
+    return f"#{n:04d}" if n < 10000 else f"#{n}"
 
-# Female given names / honorific combos
-_FEMALE: list[str] = [
-    "Khalti Aïcha",
-    "Khalti Fatma",
-    "Leila",
-    "Samira",
-    "Nadia",
-    "Sonia",
-    "Rania",
-    "Ines",
-    "Amira",
-    "Sirine",
-    "Salma",
-    "Houda",
-]
 
-# Regional / occupational epithets (appended ~55% of the time)
-_EPITHETS: list[str] = [
-    "el-Kahwagi",
-    "el-Tounsi",
-    "Sfaxi",
-    "Bizerti",
-    "el-Qairouani",
-    "Nabeuli",
-    "Hammamet",
-    "el-Ariani",
-    "Monastiri",
-    "Souassi",
-    "Mahboubi",
-    "Zarrougi",
-]
+def ensure_default_display_name(guest_id: str, *, profile_setup_done: int = 1) -> str:
+    """Create guest if missing with a numeric default name; return display_name."""
+    from models.guests import ensure_guest  # local import avoids app↔models cycles
 
-# ---------------------------------------------------------------------------
-# Generator
-# ---------------------------------------------------------------------------
+    return ensure_guest(guest_id, profile_setup_done=profile_setup_done)
+
 
 def generate_display_name() -> str:
-    """Return a random Tunisian-style display name (12–28 chars typical)."""
-    name = random.choice(_MALE + _FEMALE)
-    if random.random() < 0.55:
-        name = f"{name} {random.choice(_EPITHETS)}"
-    return name
+    """Deprecated: names are assigned per guest in the database. Use ensure_default_display_name."""
+    raise RuntimeError(
+        "generate_display_name() is obsolete; call ensure_default_display_name(guest_id) instead."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -93,14 +47,14 @@ def generate_display_name() -> str:
 # ---------------------------------------------------------------------------
 
 _AVATAR_PALETTE: list[str] = [
-    "#c0392b",  # pomegranate red
-    "#d35400",  # pumpkin orange
-    "#e6ac00",  # warm gold
-    "#27ae60",  # nephritis green
-    "#16a085",  # green-sea teal
-    "#2980b9",  # belize blue
-    "#8e44ad",  # wisteria purple
-    "#2c3e50",  # midnight blue
+    "#c0392b",
+    "#d35400",
+    "#e6ac00",
+    "#27ae60",
+    "#16a085",
+    "#2980b9",
+    "#8e44ad",
+    "#2c3e50",
 ]
 
 
