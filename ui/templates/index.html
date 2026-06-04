@@ -295,9 +295,6 @@
 
 </div><!-- /board -->
 
-<!-- ── Last move (populated live by JS from last_human_action / last_bot_action) ── -->
-<div class="last-move" id="last-move" aria-live="polite"></div>
-
 <!-- ── Last-move window: most recent play shown with real card faces ── -->
 <div class="last-move-window" id="last-move-window" style="display:none" aria-live="polite"></div>
 
@@ -1805,68 +1802,70 @@ function apiPost(url, data){
         .finally(function(){ _busy=false; hideSync(); });
 }
 
-// ── Last-move display ─────────────────────────────────────────────────────
-function _lmChip(cardStr){
-    if(!cardStr) return '';
-    return '<span class="lm-chip'+(isRed(cardStr)?' red':'')+'">'+cardStr+'</span>';
-}
-function _lmRow(who, cls, action){
-    if(!action || !action.played) return '';
-    var cap = (action.captured && action.captured.length)
-        ? '<span class="lm-arrow">→</span>'+action.captured.map(_lmChip).join('')
-        : '<span class="lm-arrow">→</span><span class="lm-table">table</span>';
-    return '<div class="lm-row '+cls+'"><span class="lm-who">'+who+'</span>'+
-           _lmChip(action.played)+cap+'</div>';
-}
-function renderLastMove(st){
-    var el = document.getElementById('last-move');
-    if(!el || !st) return;
-    var youRow = _lmRow('You', 'lm-you', st.last_human_action);
-    var botRow = _lmRow(st.bot_name || 'Bot', 'lm-bot', st.last_bot_action);
-    el.innerHTML = youRow + botRow;
-    el.style.display = (youRow || botRow) ? '' : 'none';
-}
-
-// Floating window: the single most recent play, with real card faces.
-var _lmwPrevYou = '', _lmwPrevBot = '', _lmwLatest = null;
+// ── Last-move window: the single most recent play, with real card faces. ─────
+var _lmwPrevYou = '', _lmwPrevBot = '', _lmwLatest = null, _lmwHideTimer = null;
 function _lmwCardHtml(cardStr){
     if(!cardStr || cardStr.length < 2) return '';
     var suit = cardStr.slice(-1), rank = cardStr.slice(0, -1);
     return '<div class="lmw-card'+(isRed(cardStr)?' red':'')+'">'+
            '<span class="lmw-r">'+rank+'</span><span class="lmw-s">'+suit+'</span></div>';
 }
+function _lmwScheduleHide(el){
+    if(_lmwHideTimer){ clearTimeout(_lmwHideTimer); _lmwHideTimer = null; }
+    // Auto-hide on small screens only; desktop keeps it persistent (more room).
+    var autoHide = window.matchMedia && window.matchMedia('(max-width: 600px)').matches;
+    if(!autoHide) return;
+    _lmwHideTimer = setTimeout(function(){
+        _lmwHideTimer = null;
+        el.classList.add('lmw-hide');
+        setTimeout(function(){
+            if(el.classList.contains('lmw-hide')){ el.style.display = 'none'; el.classList.remove('lmw-hide'); }
+        }, 320);
+    }, 2500);
+}
 function renderLastMoveWindow(st){
     var el = document.getElementById('last-move-window');
     if(!el || !st) return;
-    if(st.round_over || st.match_over){ el.style.display = 'none'; return; }
+    if(st.round_over || st.match_over){
+        if(_lmwHideTimer){ clearTimeout(_lmwHideTimer); _lmwHideTimer = null; }
+        el.style.display = 'none'; return;
+    }
     var youKey = JSON.stringify(st.last_human_action || null);
     var botKey = JSON.stringify(st.last_bot_action || null);
     var youChanged = youKey !== _lmwPrevYou;
     var botChanged = botKey !== _lmwPrevBot;
     _lmwPrevYou = youKey; _lmwPrevBot = botKey;
     // Pick the most recent action: whichever changed this update (bot wins ties,
-    // since in solo it plays right after you); else keep current; else seed.
-    if(botChanged && st.last_bot_action && st.last_bot_action.played)
-        _lmwLatest = { who: (st.bot_name || 'Bot'), cls: 'lmw-bot', action: st.last_bot_action };
-    else if(youChanged && st.last_human_action && st.last_human_action.played)
-        _lmwLatest = { who: 'You', cls: 'lmw-you', action: st.last_human_action };
-    else if(!_lmwLatest){
+    // since in solo it plays right after you).
+    var changed = false;
+    if(botChanged && st.last_bot_action && st.last_bot_action.played){
+        _lmwLatest = { who: (st.bot_name || 'Bot'), cls: 'lmw-bot', action: st.last_bot_action }; changed = true;
+    } else if(youChanged && st.last_human_action && st.last_human_action.played){
+        _lmwLatest = { who: 'You', cls: 'lmw-you', action: st.last_human_action }; changed = true;
+    } else if(!_lmwLatest){
         if(st.last_bot_action && st.last_bot_action.played)
-            _lmwLatest = { who: (st.bot_name || 'Bot'), cls: 'lmw-bot', action: st.last_bot_action };
+            { _lmwLatest = { who: (st.bot_name || 'Bot'), cls: 'lmw-bot', action: st.last_bot_action }; changed = true; }
         else if(st.last_human_action && st.last_human_action.played)
-            _lmwLatest = { who: 'You', cls: 'lmw-you', action: st.last_human_action };
+            { _lmwLatest = { who: 'You', cls: 'lmw-you', action: st.last_human_action }; changed = true; }
     }
     if(!_lmwLatest || !_lmwLatest.action || !_lmwLatest.action.played){
         el.style.display = 'none'; el.innerHTML = ''; return;
     }
+    // Only (re)render + (re)show on a genuinely new move, so the auto-hide timer
+    // isn't reset by the many non-move snapshots between turns.
+    if(!changed) return;
     var a = _lmwLatest.action;
     var capHtml = (a.captured && a.captured.length)
         ? '<div class="lmw-sep">captured</div><div class="lmw-cards lmw-cap">'+a.captured.map(_lmwCardHtml).join('')+'</div>'
         : '';
     el.className = 'last-move-window ' + _lmwLatest.cls;
+    el.classList.remove('lmw-hide');
     el.innerHTML = '<div class="lmw-head"><span class="lmw-who">'+_lmwLatest.who+'</span> played</div>'+
                    '<div class="lmw-cards">'+_lmwCardHtml(a.played)+'</div>'+capHtml;
+    el.style.display = 'none';   // force the pop-in animation to replay
+    void el.offsetWidth;
     el.style.display = '';
+    _lmwScheduleHide(el);
 }
 
 // ── HTML builders ─────────────────────────────────────────────────────────
@@ -2413,7 +2412,6 @@ function applyState(st, snap, prevState){
         if(st.has_pending_bot) _stashPendingPlayFromState(st);
     }
 
-    renderLastMove(st);
     renderLastMoveWindow(st);
 
     var human = !!(st.human_is_current && !st.round_over && !st.has_pending_bot);
@@ -3111,7 +3109,6 @@ function attachListeners(_captureMapIgnored){
     }
 
     _state = ps;
-    renderLastMove(ps);
     renderLastMoveWindow(ps);
     _prevHumanHandLen = ps.human_hand ? ps.human_hand.length : 0;
     _prevBotHandCount = ps.bot_hand_count || 0;

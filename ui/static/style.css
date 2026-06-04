@@ -1206,35 +1206,6 @@ html.chk-opp-first-boot #bot-cards {
 .log-you { color: var(--green); }
 .log-bot { color: var(--orange); }
 
-/* ── Last move (live) ── */
-.last-move {
-    display: flex; flex-wrap: wrap; justify-content: center;
-    gap: .35rem 1.25rem;
-    padding: .35rem 1rem;
-    max-width: 800px; width: 100%; align-self: center;
-}
-.lm-row {
-    display: inline-flex; align-items: center; gap: .3rem;
-    font-size: .78rem; line-height: 1;
-}
-.lm-who {
-    font-weight: 700; letter-spacing: .03em;
-    margin-right: .15rem;
-}
-.lm-you .lm-who { color: var(--green); }
-.lm-bot .lm-who { color: var(--orange); }
-.lm-chip {
-    display: inline-flex; align-items: center; justify-content: center;
-    min-width: 1.5rem; height: 1.5rem; padding: 0 .3rem;
-    border-radius: 5px;
-    background: var(--card-bg); color: #111;
-    font-weight: 800; font-size: .82rem;
-    box-shadow: 0 1px 2px rgba(0,0,0,.4);
-}
-.lm-chip.red { color: var(--card-red); }
-.lm-arrow { color: var(--muted); font-weight: 700; margin: 0 .1rem; }
-.lm-table { color: var(--muted); font-style: italic; font-size: .74rem; }
-
 /* ── Last-move window: most recent play with real card faces ── */
 .last-move-window {
     position: fixed; right: 12px; top: 60px; z-index: 320;
@@ -1248,6 +1219,12 @@ html.chk-opp-first-boot #bot-cards {
     animation: lmwIn .25s cubic-bezier(.2,1.2,.4,1);
 }
 @keyframes lmwIn { from { opacity:0; transform: translateY(-8px) scale(.96); } to { opacity:1; transform:none; } }
+.last-move-window.lmw-hide {
+    opacity: 0;
+    transform: translateY(-8px) scale(.96);
+    transition: opacity .3s ease, transform .3s ease;
+    pointer-events: none;
+}
 .lmw-head {
     font-size: .68rem; text-transform: uppercase; letter-spacing: .06em;
     color: var(--muted); margin-bottom: .35rem;
