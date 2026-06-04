@@ -632,6 +632,14 @@ def describe_move(move: Move) -> str:
     return f"played {played} to the table"
 
 
+def move_action(move: Move) -> dict:
+    """Structured last-move data for the live 'last action' display."""
+    return {
+        "played": card_to_str(move.played_card),
+        "captured": [card_to_str(c) for c in move.captured_cards],
+    }
+
+
 def card_to_data(card: Card) -> dict:
     return {"suit": card.suit.name, "rank": card.rank.value}
 
@@ -723,7 +731,11 @@ class GameManager:
         self.last_played_by: str | None = None
         self.last_human_move: str | None = None
         self.last_bot_move: str | None = None
-        
+        # Structured last-action data ({"played": str, "captured": [str]}) for the
+        # live last-move display.
+        self.last_human_action: dict | None = None
+        self.last_bot_action: dict | None = None
+
         # UI table slots (preserve empty positions after captures)
         self.table_slots: list[Card | None] = []
         # Opening cut: index into state.deck for the cut card (pre-deal)
@@ -782,6 +794,8 @@ class GameManager:
         self.last_played_by = None
         self.last_human_move = None
         self.last_bot_move = None
+        self.last_human_action = None
+        self.last_bot_action = None
         self.opening_cut_index = None
 
     def _setup_opening_cut(self, starting_seat: int, rng: random.Random | None = None) -> None:
@@ -890,6 +904,8 @@ class GameManager:
         self.messages = [f"New game started. Target: {target_score} points.", "Cut the deck — choose to keep the cut card or place it on the table."]
         self.last_human_move = None
         self.last_bot_move = None
+        self.last_human_action = None
+        self.last_bot_action = None
         self.round_over = False
         self.final_points = None
         self.save()
@@ -919,6 +935,8 @@ class GameManager:
         self.final_points = None
         self.last_human_move = None
         self.last_bot_move = None
+        self.last_human_action = None
+        self.last_bot_action = None
         self.pending_bot_move = None
         self.pending_bot_captured_indices = []
         self.pending_bot_played_card = None
@@ -979,6 +997,8 @@ class GameManager:
             "last_played_by": self.last_played_by,
             "last_human_move": self.last_human_move,
             "last_bot_move": self.last_bot_move,
+            "last_human_action": self.last_human_action,
+            "last_bot_action": self.last_bot_action,
             "messages": self.messages[-10:],
             "pending_bot_move": move_to_data(self.pending_bot_move) if self.pending_bot_move else None,
             "pending_bot_captured_indices": self.pending_bot_captured_indices,
@@ -1115,6 +1135,8 @@ class GameManager:
         self.last_played_by = data.get("last_played_by")
         self.last_human_move = data.get("last_human_move")
         self.last_bot_move = data.get("last_bot_move")
+        self.last_human_action = data.get("last_human_action")
+        self.last_bot_action = data.get("last_bot_action")
         self.messages = data.get("messages", [])
         self.pending_bot_move = move_from_data(data["pending_bot_move"]) if data.get("pending_bot_move") else None
         self.pending_bot_captured_indices = data.get("pending_bot_captured_indices", [])
@@ -1508,6 +1530,7 @@ class GameManager:
         slot_side = 'human' if acting_seat == 0 else 'bot'
 
         self.last_human_move = describe_move(move)
+        self.last_human_action = move_action(move)
         before_chk = self.state.players[acting_seat].chkobbas
         self.state.apply_move(move)
         if self.state.players[acting_seat].chkobbas > before_chk:
@@ -1580,6 +1603,7 @@ class GameManager:
             self.last_played_card = card_to_str(self.pending_bot_move.played_card)
             self.last_played_by = "bot"
         before_chk = self.state.players[self.bot_id].chkobbas
+        self.last_bot_action = move_action(self.pending_bot_move)
         self.state.apply_move(self.pending_bot_move)
         if self.state.players[self.bot_id].chkobbas > before_chk:
             self._queue_commentary("bot_chkobba")
@@ -1798,6 +1822,8 @@ class GameManager:
             "messages": self.messages[-6:],
             "last_human_move": self.last_human_move,
             "last_bot_move": self.last_bot_move,
+            "last_human_action": self.last_human_action,
+            "last_bot_action": self.last_bot_action,
             "final_points": self.final_points,
             "round_breakdown": self.round_breakdown,
             "commentary_toast": self._consume_commentary(),
@@ -2006,6 +2032,8 @@ class GameManager:
             "messages": self.messages[-6:],
             "last_human_move": self.last_human_move,
             "last_bot_move": self.last_bot_move,
+            "last_human_action": self.last_human_action,
+            "last_bot_action": self.last_bot_action,
 
             # Final score
             "final_points": self.final_points,
@@ -3109,6 +3137,8 @@ def _empty_game_ctx() -> dict:
         "messages": [],
         "last_human_move": None,
         "last_bot_move": None,
+        "last_human_action": None,
+        "last_bot_action": None,
         "final_points": None,
         "round_breakdown": [],
         "commentary_toast": None,

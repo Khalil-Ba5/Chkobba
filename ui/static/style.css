@@ -1206,6 +1206,88 @@ html.chk-opp-first-boot #bot-cards {
 .log-you { color: var(--green); }
 .log-bot { color: var(--orange); }
 
+/* ── Last move (live) ── */
+.last-move {
+    display: flex; flex-wrap: wrap; justify-content: center;
+    gap: .35rem 1.25rem;
+    padding: .35rem 1rem;
+    max-width: 800px; width: 100%; align-self: center;
+}
+.lm-row {
+    display: inline-flex; align-items: center; gap: .3rem;
+    font-size: .78rem; line-height: 1;
+}
+.lm-who {
+    font-weight: 700; letter-spacing: .03em;
+    margin-right: .15rem;
+}
+.lm-you .lm-who { color: var(--green); }
+.lm-bot .lm-who { color: var(--orange); }
+.lm-chip {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-width: 1.5rem; height: 1.5rem; padding: 0 .3rem;
+    border-radius: 5px;
+    background: var(--card-bg); color: #111;
+    font-weight: 800; font-size: .82rem;
+    box-shadow: 0 1px 2px rgba(0,0,0,.4);
+}
+.lm-chip.red { color: var(--card-red); }
+.lm-arrow { color: var(--muted); font-weight: 700; margin: 0 .1rem; }
+.lm-table { color: var(--muted); font-style: italic; font-size: .74rem; }
+
+/* ── Last-move window: most recent play with real card faces ── */
+.last-move-window {
+    position: fixed; right: 12px; top: 60px; z-index: 320;
+    background: rgba(20, 12, 6, .82);
+    backdrop-filter: blur(8px);
+    border: 1px solid rgba(255,255,255,.12);
+    border-radius: 12px;
+    padding: .55rem .65rem;
+    box-shadow: 0 8px 24px rgba(0,0,0,.5);
+    max-width: 46vw;
+    animation: lmwIn .25s cubic-bezier(.2,1.2,.4,1);
+}
+@keyframes lmwIn { from { opacity:0; transform: translateY(-8px) scale(.96); } to { opacity:1; transform:none; } }
+.lmw-head {
+    font-size: .68rem; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--muted); margin-bottom: .35rem;
+}
+.lmw-head .lmw-who { font-weight: 800; }
+.last-move-window.lmw-you .lmw-who { color: var(--green); }
+.last-move-window.lmw-bot .lmw-who { color: var(--orange); }
+.lmw-cards { display: flex; flex-wrap: wrap; gap: .3rem; }
+.lmw-sep {
+    font-size: .62rem; text-transform: uppercase; letter-spacing: .08em;
+    color: var(--muted); margin: .35rem 0 .2rem;
+}
+.lmw-card {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    width: 34px; height: 48px; flex-shrink: 0;
+    background: var(--card-bg); color: #111;
+    border-radius: 6px;
+    border: 1px solid #cfc4b0;
+    box-shadow: 0 2px 5px rgba(0,0,0,.4);
+    line-height: 1;
+}
+.lmw-card.red { color: var(--card-red); }
+.lmw-card .lmw-r { font-size: .82rem; font-weight: 900; }
+.lmw-card .lmw-s { font-size: .9rem; }
+.lmw-cap .lmw-card { width: 30px; height: 42px; opacity: .96; }
+
+@media (max-width: 600px) {
+    /* Top-right sits over the opponent's capture-pile corner — the least
+       interactive area while you're focused on your hand and the felt. Kept
+       compact and horizontal so it stays out of the way. */
+    .last-move-window {
+        right: 6px; top: 52px; padding: .4rem .5rem; max-width: 60vw;
+    }
+    .lmw-head { margin-bottom: .25rem; font-size: .62rem; }
+    .lmw-card { width: 26px; height: 37px; }
+    .lmw-card .lmw-r { font-size: .72rem; }
+    .lmw-cap .lmw-card { width: 23px; height: 33px; }
+    .lmw-sep { margin: .25rem 0 .15rem; }
+}
+
 /* ════════════════════════════════════════
    DEBUG PANEL
 ════════════════════════════════════════ */
